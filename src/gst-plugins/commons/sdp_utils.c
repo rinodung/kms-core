@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2013 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
@@ -17,6 +19,8 @@
 #include <gst/gst.h>
 #include <glib.h>
 #include <stdlib.h>
+
+#include "constants.h"
 
 #define GST_CAT_DEFAULT sdp_utils
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
@@ -197,7 +201,7 @@ sdp_utils_media_get_fid_ssrc (const GstSDPMedia * media, guint pos)
 GstSDPDirection
 sdp_utils_media_config_get_direction (const GstSDPMedia * media)
 {
-  GstSDPDirection dir = SENDRECV;
+  GstSDPDirection dir = GST_SDP_DIRECTION_SENDRECV;
 
   guint i, len;
 
@@ -214,6 +218,47 @@ sdp_utils_media_config_get_direction (const GstSDPMedia * media)
   }
 
   return dir;
+}
+
+gboolean
+sdp_utils_media_config_set_direction (GstSDPMedia * media,
+    GstSDPDirection direction)
+{
+  const gchar *dir_str;
+  guint i, len;
+
+  if (direction == GST_SDP_DIRECTION_RECVONLY) {
+    dir_str = RECVONLY_STR;
+  } else if (direction == GST_SDP_DIRECTION_SENDONLY) {
+    dir_str = SENDONLY_STR;
+  } else if (direction == GST_SDP_DIRECTION_SENDRECV) {
+    dir_str = SENDRECV_STR;
+  } else if (direction == GST_SDP_DIRECTION_INACTIVE) {
+    dir_str = INACTIVE_STR;
+  } else {
+    GST_WARNING ("Invalid attribute direction: %d", direction);
+    return FALSE;
+  }
+
+  len = gst_sdp_media_attributes_len (media);
+  for (i = 0; i < len; i++) {
+    const GstSDPAttribute *a;
+
+    a = gst_sdp_media_get_attribute (media, i);
+    if (sdp_utils_attribute_is_direction (a, NULL)) {
+      if (gst_sdp_media_remove_attribute (media, i) != GST_SDP_OK) {
+        gchar *str = NULL;
+
+        GST_WARNING ("Cannot remove attribute '%d' from media:\n%s", i, (str =
+                gst_sdp_media_as_text (media)));
+        g_free (str);
+
+        return FALSE;
+      }
+    }
+  }
+
+  return gst_sdp_media_add_attribute (media, dir_str, "") == GST_SDP_OK;
 }
 
 /**
@@ -300,11 +345,6 @@ sdp_utils_add_setup_attribute (const GstSDPAttribute * attr,
 
   /* follow rules defined in RFC4145 */
 
-  if (g_strcmp0 (attr->key, "setup") != 0) {
-    GST_WARNING ("%s is not a setup attribute", attr->key);
-    return FALSE;
-  }
-
   if (g_strcmp0 (attr->value, "active") == 0) {
     setup = "passive";
   } else if (g_strcmp0 (attr->value, "passive") == 0) {
@@ -316,6 +356,21 @@ sdp_utils_add_setup_attribute (const GstSDPAttribute * attr,
   }
 
   return gst_sdp_attribute_set (new_attr, attr->key, setup) == GST_SDP_OK;
+}
+
+static gboolean
+sdp_utils_add_comedia_attribute (const GstSDPAttribute * attr,
+    GstSDPAttribute * new_attr)
+{
+  const gchar *comedia;
+
+  if (g_strcmp0 (attr->value, "active") == 0) {
+    comedia = "passive";
+  } else {
+    comedia = "active";
+  }
+
+  return gst_sdp_attribute_set (new_attr, attr->key, comedia) == GST_SDP_OK;
 }
 
 static gboolean
@@ -351,22 +406,32 @@ intersect_attribute (const GstSDPAttribute * attr,
   if (g_strcmp0 (attr->key, "setup") == 0) {
     /* follow rules defined in RFC4145 */
     if (!sdp_utils_add_setup_attribute (attr, &new_attr)) {
-      GST_WARNING ("Can not set attribute a=%s:%s", attr->key, attr->value);
+      GST_WARNING ("Cannot set attribute a=%s:%s", attr->key, attr->value);
       return FALSE;
     }
     a = &new_attr;
-  } else if (g_strcmp0 (attr->key, "connection") == 0) {
+  }
+  else if (g_strcmp0 (attr->key, "direction") == 0) {
+    //J COMEDIA-based discovery of remote IP+port
+    if (!sdp_utils_add_comedia_attribute (attr, &new_attr)) {
+      GST_WARNING ("Cannot set attribute a=%s:%s", attr->key, attr->value);
+      return FALSE;
+    }
+    a = &new_attr;
+  }
+  else if (g_strcmp0 (attr->key, "connection") == 0) {
     /* TODO: Implment a mechanism that allows us to know if a */
     /* new connection is gonna be required or an existing one */
     /* can be used. By default we always create a new one. */
     if (gst_sdp_attribute_set (&new_attr, "connection", "new") != GST_SDP_OK) {
-      GST_WARNING ("Can not add attribute a=connection:new");
+      GST_WARNING ("Cannot add attribute a=connection:new");
       return FALSE;
     }
     a = &new_attr;
-  } else if (sdp_utils_attribute_is_direction (attr, NULL)) {
+  }
+  else if (sdp_utils_attribute_is_direction (attr, NULL)) {
     if (!sdp_utils_set_direction_answer (attr, &new_attr)) {
-      GST_WARNING ("Can not set direction attribute");
+      GST_WARNING ("Cannot set 'direction' attribute");
       return FALSE;
     }
 
@@ -948,6 +1013,41 @@ sdp_utils_get_pt_for_codec_name (const GstSDPMedia * media,
   }
 
   return pt;
+}
+
+gint
+sdp_utils_get_abs_send_time_id (const GstSDPMedia * media)
+{
+  guint a;
+
+  for (a = 0;; a++) {
+    const gchar *attr;
+    gchar **tokens;
+
+    attr = gst_sdp_media_get_attribute_val_n (media, EXT_MAP, a);
+    if (attr == NULL) {
+      break;
+    }
+
+    tokens = g_strsplit (attr, " ", 0);
+    if (g_strcmp0 (RTP_HDR_EXT_ABS_SEND_TIME_URI, tokens[1]) == 0) {
+      gint ret = atoi (tokens[0]);
+
+      g_strfreev (tokens);
+      return ret;
+    }
+
+    g_strfreev (tokens);
+  }
+
+  return -1;
+}
+
+gboolean
+sdp_utils_media_is_inactive (const GstSDPMedia * media)
+{
+  return gst_sdp_media_get_attribute_val (media, "inactive") != NULL
+      || gst_sdp_media_get_port (media) == 0;
 }
 
 static void init_debug (void) __attribute__ ((constructor));

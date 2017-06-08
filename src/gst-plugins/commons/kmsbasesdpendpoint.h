@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2013 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifndef __KMS_BASE_SDP_ENDPOINT_H__
@@ -75,7 +77,7 @@ struct _KmsBaseSdpEndpointClass
   void (*start_transport_send) (KmsBaseSdpEndpoint * self, KmsSdpSession *sess, gboolean offerer);
   void (*connect_input_elements) (KmsBaseSdpEndpoint * self, KmsSdpSession *sess);
 
-  gboolean (*configure_media) (KmsBaseSdpEndpoint * self, KmsSdpSession *sess, SdpMediaConfig * mconf);
+  gboolean (*configure_media) (KmsBaseSdpEndpoint * self, KmsSdpSession *sess, KmsSdpMediaHandler * handler, GstSDPMedia *media);
 
   /* Virtual handler factory methods */
   void (*create_media_handler) (KmsBaseSdpEndpoint * self, const gchar *media, KmsSdpMediaHandler **handler);
@@ -85,7 +87,7 @@ GType kms_base_sdp_endpoint_get_type (void);
 
 GHashTable * kms_base_sdp_endpoint_get_sessions (KmsBaseSdpEndpoint * self);
 KmsSdpSession * kms_base_sdp_endpoint_get_session (KmsBaseSdpEndpoint * self, const gchar *sess_id);
-SdpMessageContext * kms_base_sdp_endpoint_get_first_negotiated_sdp_ctx (KmsBaseSdpEndpoint * self);
+const GstSDPMessage * kms_base_sdp_endpoint_get_first_negotiated_sdp (KmsBaseSdpEndpoint * self);
 
 G_END_DECLS
 #endif /* __KMS_BASE_SDP_ENDPOINT_H__ */

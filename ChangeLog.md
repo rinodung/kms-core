@@ -1,3 +1,52 @@
+6.6.1
+=====
+
+  * Fix problem in pts synchronization algorithm when remote is sending
+    wrong RTCP SR packages that produces backwards PTS.
+  * Improve thread management when using filters. Filter processing uses
+    its own thread and drops packages that are late.
+  * Improve compilation issues.
+
+6.6.0
+=====
+
+  * Bugs fixes:
+
+     * Improve rtp synchronization algorithm, this makes recorder behave
+       better when recording from RtpEndpoint or WebRTCEndpoint
+     * Fix memory problems during Media Elements disconnections. This problem
+       was also present when
+     * Improve Media Elements connection, some cases were not working
+       correctly, specially when creating multi stream elements
+     * Fix memory problems in flowOut/flowIn events detection
+     * Allow c++ to listen to signals with at return value
+     * Memory leaks
+     * Fix some rare media deadlocks on on AgnosticBin
+     * UriEndpoint: Add support
+  * Update SDP Agent
+
+     * Make code cleaner
+     * Add support for error notification using GError, this allows
+       raising betters exceptions to client
+  * Documentation improvements
+  * ServerManager: Add method to get memory used by the server
+  * UriEndpoint: Add property to get state
+  * UriEndpoint: Add event to notify state changes
+
+6.5.0
+=====
+
+  * Change license to Apache 2.0
+  * Fix bugs in Flow IN - Flow OUT event (caused a segmentation fault)
+  * REMB algorithm improvements
+  * Fix max/min video bandwidth parameters (now 0 means unlimited)
+  * Improve the API changing some event/methods names and deprecating old ones
+    (even they are still available, it's recommended to not use them as they
+     can be remoted on the next major release)
+  * Documentation inprovement
+  * Raise events from differents threads
+  * Agnosticbin: Add support for rtp format (only at output)
+
 6.4.0
 =====
 

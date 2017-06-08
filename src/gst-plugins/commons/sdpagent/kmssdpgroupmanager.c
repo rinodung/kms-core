@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2015 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifdef HAVE_CONFIG_H
@@ -39,6 +41,8 @@ G_DEFINE_TYPE_WITH_CODE (KmsSdpGroupManager, kms_sdp_group_manager,
     KmsSdpGroupManagerPrivate                     \
   )                                               \
 )
+
+#define GROUP_ATTR_VALUE "group"
 
 struct _KmsSdpGroupManagerPrivate
 {
@@ -160,6 +164,8 @@ kms_sdp_group_manager_add_group_impl (KmsSdpGroupManager * self,
   gid = self->priv->gid++;
 
   g_hash_table_insert (self->priv->groups, GUINT_TO_POINTER (gid), group);
+
+  g_object_set (group, "id", gid, NULL);
 
   return gid;
 }
@@ -293,6 +299,22 @@ kms_sdp_group_manager_add_handler_impl (KmsSdpGroupManager * self,
   }
 }
 
+static void
+kms_sdp_group_manager_remove_handler_from_groups (KmsSdpGroupManager * self,
+    KmsSdpHandler * handler)
+{
+  GHashTableIter iter;
+  gpointer key, value;
+
+  g_hash_table_iter_init (&iter, self->priv->groups);
+
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    KmsSdpBaseGroup *group = KMS_SDP_BASE_GROUP (value);
+
+    kms_sdp_base_group_remove_media_handler (group, handler, NULL);
+  }
+}
+
 static gboolean
 kms_sdp_group_manager_remove_handler_impl (KmsSdpGroupManager * self,
     KmsSdpHandler * handler)
@@ -303,7 +325,8 @@ kms_sdp_group_manager_remove_handler_impl (KmsSdpGroupManager * self,
       GUINT_TO_POINTER (handler->id));
 
   if (data == NULL) {
-    return FALSE;
+    /* Handler is removed */
+    return TRUE;
   }
 
   disconnect_signals (data);
@@ -313,11 +336,7 @@ kms_sdp_group_manager_remove_handler_impl (KmsSdpGroupManager * self,
     GST_WARNING_OBJECT (self, "No extension signals connected");
   }
 
-  if (g_slist_length (handler->groups) > 0) {
-    /* TODO: Remove this handler from groups in new API */
-    GST_WARNING_OBJECT (self, "TODO: Remove handler %u from groups",
-        handler->id);
-  }
+  kms_sdp_group_manager_remove_handler_from_groups (self, handler);
 
   return g_hash_table_remove (self->priv->handlers,
       GUINT_TO_POINTER (handler->id));
@@ -367,6 +386,136 @@ kms_sdp_group_manager_remove_handler_from_group_impl (KmsSdpGroupManager * self,
   return kms_sdp_base_group_remove_media_handler (group, handler, NULL);
 }
 
+static const gchar *
+kms_sdp_group_manager_get_group_val (KmsSdpGroupManager * obj,
+    const gchar * semantics, const GstSDPMessage * msg)
+{
+  const gchar *val;
+  guint i;
+
+  for (i = 0;; i++) {
+    gchar **values;
+    gboolean found;
+
+    val = gst_sdp_message_get_attribute_val_n (msg, GROUP_ATTR_VALUE, i);
+
+    if (val == NULL) {
+      /* No more group attributes */
+      return NULL;
+    }
+
+    values = g_strsplit (val, " ", 2);
+    found = g_strcmp0 (semantics, values[0]) == 0;
+    g_strfreev (values);
+
+    if (found) {
+      return val;
+    }
+  }
+}
+
+static gboolean
+is_mid_in_group (const gchar * group_attr, const gchar * mid)
+{
+  gboolean ret = FALSE;
+  gchar **values;
+  guint i;
+
+  values = g_strsplit (group_attr, " ", -1);
+
+  for (i = 1; values[i] != NULL; i++) {
+    if (g_strcmp0 (mid, values[i]) == 0) {
+      ret = TRUE;
+      break;
+    }
+  }
+
+  g_strfreev (values);
+
+  return ret;
+}
+
+static gboolean
+kms_sdp_group_manager_is_handler_valid_for_groups_impl (KmsSdpGroupManager *
+    obj, const GstSDPMedia * media, const GstSDPMessage * offer,
+    KmsSdpHandler * handler)
+{
+  KmsSdpBaseGroup *group = NULL;
+  gboolean ret = FALSE;
+  const gchar *mid;
+
+  mid = gst_sdp_media_get_attribute_val (media, "mid");
+  group = kms_sdp_group_manager_get_group (obj, handler);
+
+  if (mid == NULL) {
+    /* handler will be compatible if has no group */
+    ret = group == NULL;
+    goto end;
+  }
+
+  if (group != NULL) {
+    const gchar *val;
+    gchar *semantics;
+
+    g_object_get (group, "semantics", &semantics, NULL);
+
+    val = kms_sdp_group_manager_get_group_val (obj, semantics, offer);
+    g_free (semantics);
+
+    if (val == NULL) {
+      /* handler belongs to a group that this media does not */
+      ret = FALSE;
+    } else {
+      ret = is_mid_in_group (val, mid);
+    }
+  } else {
+    gint i;
+
+    /* handler does not belong to any group, it will be incompatible if */
+    /* media does */
+    for (i = 0;; i++) {
+      const gchar *val;
+
+      val = gst_sdp_message_get_attribute_val_n (offer, GROUP_ATTR_VALUE, i);
+
+      if (val == NULL) {
+        /* No more group attributes */
+        ret = TRUE;
+        break;
+      }
+
+      if (is_mid_in_group (val, mid)) {
+        break;
+      }
+    }
+  }
+
+end:
+  g_clear_object (&group);
+
+  return ret;
+}
+
+KmsSdpBaseGroup *
+kms_sdp_group_manager_get_group_impl (KmsSdpGroupManager * self,
+    KmsSdpHandler * handler)
+{
+  GHashTableIter iter;
+  gpointer key, value;
+
+  g_hash_table_iter_init (&iter, self->priv->groups);
+
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    KmsSdpBaseGroup *group = KMS_SDP_BASE_GROUP (value);
+
+    if (kms_sdp_base_group_contains_handler (group, handler)) {
+      return KMS_SDP_BASE_GROUP (g_object_ref (group));
+    }
+  }
+
+  return NULL;
+}
+
 static void
 kms_sdp_group_manager_class_init (KmsSdpGroupManagerClass * klass)
 {
@@ -377,10 +526,13 @@ kms_sdp_group_manager_class_init (KmsSdpGroupManagerClass * klass)
 
   klass->add_group = kms_sdp_group_manager_add_group_impl;
   klass->add_handler = kms_sdp_group_manager_add_handler_impl;
+  klass->get_group = kms_sdp_group_manager_get_group_impl;
   klass->remove_handler = kms_sdp_group_manager_remove_handler_impl;
   klass->add_handler_to_group = kms_sdp_group_manager_add_handler_to_group_impl;
   klass->remove_handler_from_group =
       kms_sdp_group_manager_remove_handler_from_group_impl;
+  klass->is_handler_valid_for_groups =
+      kms_sdp_group_manager_is_handler_valid_for_groups_impl;
 
   g_type_class_add_private (klass, sizeof (KmsSdpGroupManagerPrivate));
 }
@@ -428,6 +580,15 @@ kms_sdp_group_manager_add_handler (KmsSdpGroupManager * obj,
   return KMS_SDP_GROUP_MANAGER_GET_CLASS (obj)->add_handler (obj, handler);
 }
 
+KmsSdpBaseGroup *
+kms_sdp_group_manager_get_group (KmsSdpGroupManager * obj,
+    KmsSdpHandler * handler)
+{
+  g_return_val_if_fail (KMS_IS_SDP_GROUP_MANAGER (obj), NULL);
+
+  return KMS_SDP_GROUP_MANAGER_GET_CLASS (obj)->get_group (obj, handler);
+}
+
 gboolean
 kms_sdp_group_manager_remove_handler (KmsSdpGroupManager * obj,
     KmsSdpHandler * handler)
@@ -455,4 +616,30 @@ kms_sdp_group_manager_remove_handler_from_group (KmsSdpGroupManager * obj,
 
   return KMS_SDP_GROUP_MANAGER_GET_CLASS (obj)->remove_handler_from_group (obj,
       gid, hid);
+}
+
+GList *
+kms_sdp_group_manager_get_groups (KmsSdpGroupManager * obj)
+{
+  GList *groups, *ret = NULL;
+
+  g_return_val_if_fail (KMS_IS_SDP_GROUP_MANAGER (obj), NULL);
+
+  groups = g_hash_table_get_values (obj->priv->groups);
+  ret = g_list_copy_deep (groups, (GCopyFunc) g_object_ref, NULL);
+  g_list_free (groups);
+
+  return ret;
+}
+
+gboolean
+kms_sdp_group_manager_is_handler_valid_for_groups (KmsSdpGroupManager * obj,
+    const GstSDPMedia * media, const GstSDPMessage * offer,
+    KmsSdpHandler * handler)
+{
+  g_return_val_if_fail (KMS_IS_SDP_GROUP_MANAGER (obj), FALSE);
+
+  return
+      KMS_SDP_GROUP_MANAGER_GET_CLASS (obj)->is_handler_valid_for_groups (obj,
+      media, offer, handler);
 }

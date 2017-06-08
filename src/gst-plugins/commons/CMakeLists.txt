@@ -1,14 +1,3 @@
-include_directories(
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${CMAKE_CURRENT_BINARY_DIR}
-  ${gstreamer-1.5_INCLUDE_DIRS}
-  ${gstreamer-base-1.5_SOURCE_DIRS}
-  ${gstreamer-sdp-1.5_SOURCE_DIRS}
-  ${gstreamer-pbutils-1.5_SOURCE_DIRS}
-  ${gstreamer-video-1.5_INCLUDE_DIRS}
-  ${uuid_INCLUDE_DIRS}
-)
-
 set(KMS_SDP_UTILS_SOURCES
   sdp_utils.c
 )
@@ -18,6 +7,14 @@ set(KMS_SDP_UTILS_HEADERS
 )
 
 add_library(sdputils ${KMS_SDP_UTILS_SOURCES} ${KMS_SDP_UTILS_HEADERS})
+
+set_property (TARGET sdputils
+  PROPERTY INCLUDE_DIRECTORIES
+    ${gstreamer-1.5_INCLUDE_DIRS}
+    ${gstreamer-base-1.5_INCLUDE_DIRS}
+    ${gstreamer-sdp-1.5_INCLUDE_DIRS}
+    ${gstreamer-pbutils-1.5_INCLUDE_DIRS}
+)
 
 target_link_libraries(sdputils
   ${gstreamer-1.5_LIBRARIES}
@@ -40,11 +37,12 @@ install(
   PUBLIC_HEADER DESTINATION ${INCLUDE_PREFIX}
 )
 
-set(KMS_UTILS
-  kmsutils.c kmsutils.h
-)
-
 add_library(kmsrefstruct kmsrefstruct.c kmsrefstruct.h)
+
+set_property(TARGET kmsrefstruct
+  PROPERTY INCLUDE_DIRECTORIES
+    ${gstreamer-1.5_INCLUDE_DIRS}
+)
 
 target_link_libraries(kmsrefstruct
   ${gstreamer-1.5_LIBRARIES}
@@ -58,7 +56,23 @@ install(
   PUBLIC_HEADER DESTINATION ${INCLUDE_PREFIX}
 )
 
+set(KMS_UTILS
+  kmsutils.c kmsutils.h
+)
+
 add_library(kmsutils ${KMS_UTILS})
+
+set_property(TARGET kmsutils
+  PROPERTY INCLUDE_DIRECTORIES
+    ${gstreamer-1.5_INCLUDE_DIRS}
+    ${gstreamer-base-1.5_INCLUDE_DIRS}
+    ${gstreamer-sdp-1.5_INCLUDE_DIRS}
+    ${gstreamer-pbutils-1.5_INCLUDE_DIRS}
+    ${gstreamer-video-1.5_INCLUDE_DIRS}
+    ${uuid_INCLUDE_DIRS}
+)
+
+set_target_properties(kmsutils PROPERTIES PUBLIC_HEADER kmsutils.h)
 
 target_link_libraries(kmsutils
   ${gstreamer-1.5_LIBRARIES}
@@ -73,6 +87,7 @@ install(
   TARGETS kmsutils
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  PUBLIC_HEADER DESTINATION ${INCLUDE_PREFIX}
 )
 
 set(KMS_COMMONS_SOURCES
@@ -97,6 +112,7 @@ set(KMS_COMMONS_SOURCES
   kmsdectreebin.c
   kmsenctreebin.c
   kmsparsetreebin.c
+  kmsrtppaytreebin.c
   kmslist.c
 )
 
@@ -116,7 +132,6 @@ set(KMS_COMMONS_HEADERS
   kmshubport.h
   kmsbasehub.h
   kmsagnosticcaps.h
-  kmsutils.h
   kmsuriendpointstate.h
   kmsmediatype.h
   kmsuriendpoint.h
@@ -127,6 +142,7 @@ set(KMS_COMMONS_HEADERS
   kmsdectreebin.h
   kmsenctreebin.h
   kmsparsetreebin.h
+  kmsrtppaytreebin.h
   kmslist.h
 )
 
@@ -138,6 +154,7 @@ set(ENUM_HEADERS
   kmselementpadtype.h
   kmsmediastate.h
   kmsconnectionstate.h
+  gstsdpdirection.h
 )
 
 list(APPEND KMS_COMMONS_HEADERS ${ENUM_HEADERS})
@@ -147,6 +164,18 @@ add_glib_marshal(KMS_COMMONS_SOURCES KMS_COMMONS_HEADERS kms-core-marshal __kms_
 
 add_library(kmsgstcommons SHARED ${KMS_COMMONS_SOURCES} ${KMS_COMMONS_HEADERS})
 
+set_property (TARGET kmsgstcommons
+  PROPERTY INCLUDE_DIRECTORIES
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/../../..
+    ${gstreamer-1.5_INCLUDE_DIRS}
+    ${gstreamer-base-1.5_INCLUDE_DIRS}
+    ${gstreamer-sdp-1.5_INCLUDE_DIRS}
+    ${gstreamer-pbutils-1.5_INCLUDE_DIRS}
+    ${gstreamer-rtp-1.5_INCLUDE_DIRS}
+)
+
 add_dependencies(kmsgstcommons kmsrefstruct kmsutils sdputils)
 
 target_link_libraries(kmsgstcommons
@@ -154,6 +183,7 @@ target_link_libraries(kmsgstcommons
   sdputils
   kmsrefstruct
   kmssdpagent
+  kmsrtpsync
   ${gstreamer-1.5_LIBRARIES}
   ${gstreamer-base-1.5_LIBRARIES}
   ${gstreamer-sdp-1.5_LIBRARIES}
@@ -205,3 +235,5 @@ install(FILES
 )
 
 add_subdirectory(sdpagent)
+
+add_subdirectory(rtpsync)

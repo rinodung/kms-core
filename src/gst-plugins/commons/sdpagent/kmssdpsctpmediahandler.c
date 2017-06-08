@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2015 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifdef HAVE_CONFIG_H
@@ -69,7 +71,7 @@ kms_sdp_sctp_media_handler_constructor (GType gtype, guint n_properties,
 
 static GstSDPMedia *
 kms_sdp_sctp_media_handler_create_offer (KmsSdpMediaHandler * handler,
-    const gchar * media, GError ** error)
+    const gchar * media, const GstSDPMedia * prev_offer, GError ** error)
 {
   GstSDPMedia *m = NULL;
 
@@ -81,13 +83,13 @@ kms_sdp_sctp_media_handler_create_offer (KmsSdpMediaHandler * handler,
 
   /* Create m-line */
   if (!KMS_SDP_MEDIA_HANDLER_GET_CLASS (handler)->init_offer (handler, media, m,
-          error)) {
+          prev_offer, error)) {
     goto error;
   }
 
   /* Add attributes to m-line */
   if (!KMS_SDP_MEDIA_HANDLER_GET_CLASS (handler)->add_offer_attributes (handler,
-          m, error)) {
+          m, prev_offer, error)) {
     goto error;
   }
 
@@ -250,7 +252,7 @@ is_subproto (const GstSDPMedia * media, const gchar * label)
 static gboolean
 kms_sdp_sctp_media_handler_can_insert_attribute (KmsSdpMediaHandler *
     handler, const GstSDPMedia * offer, const GstSDPAttribute * attr,
-    GstSDPMedia * answer, SdpMessageContext * ctx)
+    GstSDPMedia * answer, const GstSDPMessage * msg)
 {
   if (g_strcmp0 (attr->key, "sctpmap") == 0 || is_subproto (offer, attr->key)) {
     /* ignore */
@@ -264,7 +266,7 @@ kms_sdp_sctp_media_handler_can_insert_attribute (KmsSdpMediaHandler *
   }
 
   if (!KMS_SDP_MEDIA_HANDLER_CLASS (parent_class)->can_insert_attribute
-      (handler, offer, attr, answer, ctx)) {
+      (handler, offer, attr, answer, msg)) {
     return FALSE;
   }
 
@@ -273,7 +275,7 @@ kms_sdp_sctp_media_handler_can_insert_attribute (KmsSdpMediaHandler *
 
 GstSDPMedia *
 kms_sdp_sctp_media_handler_create_answer (KmsSdpMediaHandler * handler,
-    SdpMessageContext * ctx, const GstSDPMedia * offer, GError ** error)
+    const GstSDPMessage * msg, const GstSDPMedia * offer, GError ** error)
 {
   GstSDPMedia *m = NULL;
 
@@ -296,7 +298,7 @@ kms_sdp_sctp_media_handler_create_answer (KmsSdpMediaHandler * handler,
   }
 
   if (!KMS_SDP_MEDIA_HANDLER_GET_CLASS (handler)->intersect_sdp_medias (handler,
-          offer, m, ctx, error)) {
+          offer, m, msg, error)) {
     goto error;
   }
 
@@ -316,7 +318,7 @@ struct intersect_data
   KmsSdpMediaHandler *handler;
   const GstSDPMedia *offer;
   GstSDPMedia *answer;
-  SdpMessageContext *ctx;
+  const GstSDPMessage *msg;
 };
 
 static gboolean
@@ -324,9 +326,9 @@ instersect_sctp_media_attr (const GstSDPAttribute * attr, gpointer user_data)
 {
   struct intersect_data *data = (struct intersect_data *) user_data;
 
-  if (!KMS_SDP_MEDIA_HANDLER_GET_CLASS (data->handler)->
-      can_insert_attribute (data->handler, data->offer, attr, data->answer,
-          data->ctx)) {
+  if (!KMS_SDP_MEDIA_HANDLER_GET_CLASS (data->
+          handler)->can_insert_attribute (data->handler, data->offer, attr,
+          data->answer, data->msg)) {
     return FALSE;
   }
 
@@ -342,13 +344,13 @@ instersect_sctp_media_attr (const GstSDPAttribute * attr, gpointer user_data)
 static gboolean
 kms_sdp_sctp_media_handler_intersect_sdp_medias (KmsSdpMediaHandler *
     handler, const GstSDPMedia * offer, GstSDPMedia * answer,
-    SdpMessageContext * ctx, GError ** error)
+    const GstSDPMessage * msg, GError ** error)
 {
   struct intersect_data data = {
     .handler = handler,
     .offer = offer,
     .answer = answer,
-    .ctx = ctx
+    .msg = msg
   };
 
   if (!sdp_utils_intersect_media_attributes (offer,
@@ -363,7 +365,8 @@ kms_sdp_sctp_media_handler_intersect_sdp_medias (KmsSdpMediaHandler *
 
 static gboolean
 kms_sdp_sctp_media_handler_init_offer (KmsSdpMediaHandler * handler,
-    const gchar * media, GstSDPMedia * offer, GError ** error)
+    const gchar * media, GstSDPMedia * offer, const GstSDPMedia * prev_offer,
+    GError ** error)
 {
   gboolean ret = TRUE;
 
@@ -414,7 +417,7 @@ end:
 
 static gboolean
 kms_sdp_sctp_media_handler_add_offer_attributes (KmsSdpMediaHandler * handler,
-    GstSDPMedia * offer, GError ** error)
+    GstSDPMedia * offer, const GstSDPMedia * prev_offer, GError ** error)
 {
   guint i, len;
 
@@ -444,7 +447,7 @@ kms_sdp_sctp_media_handler_add_offer_attributes (KmsSdpMediaHandler * handler,
   /* Chain up */
   return
       KMS_SDP_MEDIA_HANDLER_CLASS (parent_class)->add_offer_attributes (handler,
-      offer, error);
+      offer, prev_offer, error);
 }
 
 static gboolean

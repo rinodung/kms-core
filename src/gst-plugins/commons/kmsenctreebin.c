@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2014 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
@@ -49,7 +51,6 @@ typedef enum
 
 struct _KmsEncTreeBinPrivate
 {
-  GstPad *enc_sink;
   GstElement *enc;
   EncoderType enc_type;
   RembEventManager *remb_manager;
@@ -450,6 +451,8 @@ kms_enc_tree_bin_configure (KmsEncTreeBin * self, const GstCaps * caps,
 {
   KmsTreeBin *tree_bin = KMS_TREE_BIN (self);
   GstElement *rate, *convert, *mediator, *output_tee, *capsfilter = NULL;
+  GstElement *queue;
+  GstPad *enc_src;
 
   self->priv->current_bitrate = target_bitrate;
 
@@ -464,23 +467,26 @@ kms_enc_tree_bin_configure (KmsEncTreeBin * self, const GstCaps * caps,
 
   GST_DEBUG_OBJECT (self, "Encoder found: %" GST_PTR_FORMAT, self->priv->enc);
 
-  self->priv->enc_sink = gst_element_get_static_pad (self->priv->enc, "sink");
-  self->priv->remb_manager =
-      kms_utils_remb_event_manager_create (self->priv->enc_sink);
+  enc_src = gst_element_get_static_pad (self->priv->enc, "src");
+  self->priv->remb_manager = kms_utils_remb_event_manager_create (enc_src);
   kms_utils_remb_event_manager_set_callback (self->priv->remb_manager,
       bitrate_callback, self, NULL);
-  gst_pad_add_probe (self->priv->enc_sink, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+  gst_pad_add_probe (enc_src, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
       tag_event_probe, self, NULL);
+  g_object_unref (enc_src);
 
   rate = kms_utils_create_rate_for_caps (caps);
   convert = kms_utils_create_convert_for_caps (caps);
   mediator = kms_utils_create_mediator_element (caps);
+  queue = gst_element_factory_make ("queue", NULL);
 
   if (rate) {
     gst_bin_add (GST_BIN (self), rate);
   }
-  gst_bin_add_many (GST_BIN (self), convert, mediator, self->priv->enc, NULL);
+  gst_bin_add_many (GST_BIN (self), convert, mediator, queue, self->priv->enc,
+      NULL);
   gst_element_sync_state_with_parent (self->priv->enc);
+  gst_element_sync_state_with_parent (queue);
   gst_element_sync_state_with_parent (mediator);
   gst_element_sync_state_with_parent (convert);
   if (rate) {
@@ -516,11 +522,11 @@ kms_enc_tree_bin_configure (KmsEncTreeBin * self, const GstCaps * caps,
     gst_element_link (rate, convert);
   }
   if (self->priv->enc_type == X264) {
-    gst_element_link_many (convert, mediator, capsfilter, self->priv->enc,
-        output_tee, NULL);
+    gst_element_link_many (convert, mediator, capsfilter, queue,
+        self->priv->enc, output_tee, NULL);
   } else {
-    gst_element_link_many (convert, mediator, self->priv->enc, output_tee,
-        NULL);
+    gst_element_link_many (convert, mediator, queue, self->priv->enc,
+        output_tee, NULL);
   }
 
   return TRUE;
@@ -550,7 +556,6 @@ kms_enc_tree_bin_init (KmsEncTreeBin * self)
 {
   self->priv = KMS_ENC_TREE_BIN_GET_PRIVATE (self);
 
-  self->priv->enc_sink = NULL;
   self->priv->remb_manager = NULL;
 
   self->priv->remb_bitrate = -1;
@@ -566,9 +571,6 @@ kms_enc_tree_bin_dispose (GObject * object)
   KmsEncTreeBin *self = KMS_ENC_TREE_BIN (object);
 
   GST_DEBUG_OBJECT (object, "dispose");
-  if (self->priv->enc_sink) {
-    g_clear_object (&self->priv->enc_sink);
-  }
 
   if (self->priv->remb_manager) {
     kms_utils_remb_event_manager_destroy (self->priv->remb_manager);

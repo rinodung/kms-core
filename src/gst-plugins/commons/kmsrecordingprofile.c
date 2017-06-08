@@ -1,19 +1,21 @@
 /*
  * (C) Copyright 2013 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
-#include <kmsrecordingprofile.h>
+#include "kmsrecordingprofile.h"
 
 static GstEncodingContainerProfile *
 kms_recording_profile_create_webm_profile (gboolean has_audio,
@@ -134,6 +136,27 @@ kms_recording_profile_create_ksr_profile (gboolean has_audio,
   return cprof;
 }
 
+static GstEncodingContainerProfile *
+kms_recording_profile_create_jpeg_profile ()
+{
+  GstEncodingContainerProfile *cprof;
+  GstCaps *vc;
+  GstCaps *pc;
+
+  pc = gst_caps_from_string ("image/jpeg");
+  cprof = gst_encoding_container_profile_new ("jpeg", NULL, pc, NULL);
+  gst_caps_unref (pc);
+
+  vc = gst_caps_from_string ("image/jpeg");
+
+  gst_encoding_container_profile_add_profile (cprof, (GstEncodingProfile *)
+      gst_encoding_video_profile_new (vc, NULL, NULL, 0));
+
+  gst_caps_unref (vc);
+
+  return cprof;
+}
+
 GstEncodingContainerProfile *
 kms_recording_profile_create_profile (KmsRecordingProfile profile,
     gboolean has_audio, gboolean has_video)
@@ -151,6 +174,8 @@ kms_recording_profile_create_profile (KmsRecordingProfile profile,
       return kms_recording_profile_create_mp4_profile (FALSE, has_video);
     case KMS_RECORDING_PROFILE_MP4_AUDIO_ONLY:
       return kms_recording_profile_create_mp4_profile (has_audio, FALSE);
+    case KMS_RECORDING_PROFILE_JPEG_VIDEO_ONLY:
+      return kms_recording_profile_create_jpeg_profile ();
     case KMS_RECORDING_PROFILE_KSR:
       return kms_recording_profile_create_ksr_profile (has_audio, has_video);
     default:
@@ -174,6 +199,7 @@ kms_recording_profile_supports_type (KmsRecordingProfile profile,
       return TRUE;
     case KMS_RECORDING_PROFILE_WEBM_VIDEO_ONLY:
     case KMS_RECORDING_PROFILE_MP4_VIDEO_ONLY:
+    case KMS_RECORDING_PROFILE_JPEG_VIDEO_ONLY:
       return type == KMS_ELEMENT_PAD_TYPE_VIDEO;
     case KMS_RECORDING_PROFILE_WEBM_AUDIO_ONLY:
     case KMS_RECORDING_PROFILE_MP4_AUDIO_ONLY:

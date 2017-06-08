@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2015 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
@@ -51,11 +53,11 @@ struct _KmsBaseRtpSession
   GHashTable *conns;
   KmsConnectionState conn_state;
 
-  SdpMediaConfig *audio_neg_mconf;
+  GstSDPMedia *audio_neg;
   guint32 local_audio_ssrc;
   guint32 remote_audio_ssrc;
 
-  SdpMediaConfig *video_neg_mconf;
+  GstSDPMedia *video_neg;
   guint32 local_video_ssrc;
   guint32 remote_video_ssrc;
 
@@ -70,7 +72,7 @@ struct _KmsBaseRtpSessionClass
   /* virtual methods */
   void (*post_constructor) (KmsBaseRtpSession * self, KmsBaseSdpEndpoint * ep, guint id, KmsIRtpSessionManager * manager);
 
-  KmsIRtpConnection * (*create_connection) (KmsBaseRtpSession *self, SdpMediaConfig * mconf, const gchar *name, guint16 min_port, guint16 max_port);
+  KmsIRtpConnection * (*create_connection) (KmsBaseRtpSession *self, const GstSDPMedia * media, const gchar *name, guint16 min_port, guint16 max_port);
   KmsIRtcpMuxConnection* (*create_rtcp_mux_connection) (KmsBaseRtpSession *self, const gchar *name, guint16 min_port, guint16 max_port);
   KmsIBundleConnection * (*create_bundle_connection) (KmsBaseRtpSession *self, const gchar *name, guint16 min_port, guint16 max_port);
 
@@ -81,8 +83,8 @@ GType kms_base_rtp_session_get_type (void);
 
 KmsBaseRtpSession * kms_base_rtp_session_new (KmsBaseSdpEndpoint * ep, guint id, KmsIRtpSessionManager * manager);
 KmsIRtpConnection * kms_base_rtp_session_get_connection_by_name (KmsBaseRtpSession * self, const gchar * name);
-KmsIRtpConnection * kms_base_rtp_session_get_connection (KmsBaseRtpSession * self, SdpMediaConfig * mconf);
-KmsIRtpConnection * kms_base_rtp_session_create_connection (KmsBaseRtpSession * self, SdpMediaConfig * mconf, guint16 min_port, guint16 max_port);
+KmsIRtpConnection * kms_base_rtp_session_get_connection (KmsBaseRtpSession * self, KmsSdpMediaHandler *handler);
+KmsIRtpConnection * kms_base_rtp_session_create_connection (KmsBaseRtpSession * self, KmsSdpMediaHandler *handler, GstSDPMedia * media, guint16 min_port, guint16 max_port);
 
 void kms_base_rtp_session_start_transport_send (KmsBaseRtpSession * self, gboolean offerer);
 

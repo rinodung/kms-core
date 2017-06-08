@@ -1,3 +1,19 @@
+/*
+ * (C) Copyright 2016 Kurento (http://kurento.org/)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 #ifndef __MEDIA_ELEMENT_IMPL_HPP__
 #define __MEDIA_ELEMENT_IMPL_HPP__
 
@@ -22,7 +38,34 @@ class MediaType;
 class MediaElementImpl;
 class AudioCodec;
 class VideoCodec;
-class MediaFlowData;
+
+class MediaFlowData
+{
+public:
+  MediaFlowData (std::shared_ptr<MediaType> type,
+                 const std::string &description,
+                 std::shared_ptr<MediaFlowState> state)
+  {
+    this->type = type;
+    this->state = state;
+    this->description = description;
+  }
+
+  void setState (std::shared_ptr<MediaFlowState> state )
+  {
+    this->state = state;
+  }
+
+  std::shared_ptr<MediaFlowState>  getState ()
+  {
+    return this->state;
+  }
+
+private:
+  std::shared_ptr<MediaType> type;
+  std::shared_ptr<MediaFlowState> state;
+  std::string description;
+};
 
 struct MediaTypeCmp {
   bool operator() (const std::shared_ptr<MediaType> &a,
@@ -112,8 +155,14 @@ public:
   virtual int getMinOuputBitrate () override;
   virtual void setMinOuputBitrate (int minOuputBitrate) override;
 
+  virtual int getMinOutputBitrate () override;
+  virtual void setMinOutputBitrate (int minOutputBitrate) override;
+
   virtual int getMaxOuputBitrate () override;
   virtual void setMaxOuputBitrate (int maxOuputBitrate) override;
+
+  virtual int getMaxOutputBitrate () override;
+  virtual void setMaxOutputBitrate (int maxOutputBitrate) override;
 
   /* Next methods are automatically implemented by code generator */
   virtual bool connect (const std::string &eventType,
@@ -134,12 +183,19 @@ protected:
   GstElement *element;
   GstBus *bus;
   gulong handlerId;
+  std::map <std::string, std::shared_ptr <MediaFlowData>> mediaFlowDataIn;
+  std::map <std::string, std::shared_ptr <MediaFlowData>> mediaFlowDataOut;
 
   virtual void postConstructor () override;
   void collectLatencyStats (std::vector<std::shared_ptr<MediaLatencyStat>>
                             &latencyStats, const GstStructure *stats);
   virtual void fillStatsReport (std::map <std::string, std::shared_ptr<Stats>>
                                 &report, const GstStructure *stats, double timestamp);
+
+  virtual void prepareSinkConnection (std::shared_ptr<MediaElement> src,
+                                      std::shared_ptr<MediaType> mediaType,
+                                      const std::string &sourceMediaDescription,
+                                      const std::string &sinkMediaDescription);
 
 private:
   std::recursive_timed_mutex sourcesMutex;
@@ -154,11 +210,9 @@ private:
   std::mt19937_64 rnd {std::random_device{}() };
   std::uniform_int_distribution<> dist {1, 100};
 
-  gulong padAddedHandlerId;
-  gulong mediaFlowOutHandler;
-  gulong mediaFlowInHandler;
-  std::map <std::string, std::shared_ptr <MediaFlowData>> mediaFlowDataIn;
-  std::map <std::string, std::shared_ptr <MediaFlowData>> mediaFlowDataOut;
+  gulong padAddedHandlerId = 0;
+  gulong mediaFlowOutHandler = 0;
+  gulong mediaFlowInHandler = 0;
 
   void disconnectAll();
   void performConnection (std::shared_ptr <ElementConnectionDataInternal> data);

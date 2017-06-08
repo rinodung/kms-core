@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2015 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifdef HAVE_CONFIG_H
@@ -368,7 +370,8 @@ kms_sdp_media_config_get_sdp_media (SdpMediaConfig * mconf)
 gboolean
 kms_sdp_media_config_is_inactive (SdpMediaConfig * mconf)
 {
-  return gst_sdp_media_get_port (mconf->media) == 0;
+  return (gst_sdp_media_get_attribute_val (mconf->media, "inactive") != NULL)
+      || (gst_sdp_media_get_port (mconf->media) == 0);
 }
 
 gint
@@ -645,6 +648,7 @@ copy_session_attributes (SdpMessageContext * ctx, const GstSDPMessage * msg,
     GError ** error)
 {
   const GstSDPOrigin *o1;
+  const GstSDPConnection *conn;
   const gchar *s;
 
   o1 = gst_sdp_message_get_origin (msg);
@@ -664,6 +668,10 @@ copy_session_attributes (SdpMessageContext * ctx, const GstSDPMessage * msg,
         SDP_AGENT_INVALID_PARAMETER, "Can not set session name");
     return FALSE;
   }
+
+  conn = gst_sdp_message_get_connection (msg);
+  gst_sdp_message_set_connection (ctx->msg, conn->nettype, conn->addrtype,
+      conn->address, conn->ttl, conn->addr_number);
 
   if (!sdp_utils_intersect_session_attributes (msg, intersect_session_attr,
           ctx)) {
@@ -761,20 +769,7 @@ kms_sdp_message_context_set_origin (SdpMessageContext * ctx,
     return FALSE;
   }
 
-  if (gst_sdp_message_set_connection (ctx->msg, origin->nettype,
-          origin->addrtype, origin->addr, 0, 0) != GST_SDP_OK) {
-    g_set_error_literal (error, KMS_SDP_AGENT_ERROR,
-        SDP_AGENT_INVALID_PARAMETER, "Can not set attr: connection");
-    return FALSE;
-  }
-
   return TRUE;
-}
-
-const GstSDPOrigin *
-kms_sdp_message_context_get_origin (const SdpMessageContext * ctx)
-{
-  return gst_sdp_message_get_origin (ctx->msg);
 }
 
 KmsSdpMessageType kms_sdp_message_context_get_type (SdpMessageContext * ctx);

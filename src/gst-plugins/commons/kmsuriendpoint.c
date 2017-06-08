@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2013 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifdef HAVE_CONFIG_H
@@ -56,13 +58,17 @@ enum
 
 #define DEFAULT_URI_ENDPOINT_STATE KMS_URI_ENDPOINT_STATE_STOP
 
-#define CALL_IF_DEFINED(obj, method, state) do {                        \
+#define CALL_IF_DEFINED(obj, method, err) ({                            \
+  gboolean _ret;                                                        \
   if ((method) != NULL) {                                               \
-    method(obj);                                                        \
+    _ret = method(obj, err);                                            \
   } else {                                                              \
-    GST_WARNING("Undefined method " #method);                           \
+    g_set_error_literal (err, KMS_URI_ENDPOINT_ERROR,                   \
+      KMS_URI_ENDPOINT_UNEXPECTED_ERROR, "Undefined method " #method);  \
+    _ret = FALSE;                                                       \
   }                                                                     \
-} while (0)
+  _ret;                                                                 \
+})
 
 static GParamSpec *obj_properties[N_PROPERTIES] = { NULL, };
 
@@ -73,6 +79,23 @@ G_DEFINE_TYPE_WITH_CODE (KmsUriEndpoint, kms_uri_endpoint,
     GST_DEBUG_CATEGORY_INIT (kms_uri_endpoint_debug_category, PLUGIN_NAME,
         0, "debug category for uriendpoint element"));
 
+static const gchar *str_uristate[] = {
+  "stop",
+  "start",
+  "pause"
+};
+
+const gchar *
+kms_uriendpoint_state_to_string (KmsUriEndpointState state)
+{
+  if (state < G_N_ELEMENTS (str_uristate))
+    return str_uristate[state];
+
+  GST_ERROR ("Invalid uri endpoint state: %u", state);
+
+  return NULL;
+}
+
 static void
 kms_uri_endpoint_change_state_impl (KmsUriEndpoint * self,
     KmsUriEndpointState state)
@@ -80,31 +103,62 @@ kms_uri_endpoint_change_state_impl (KmsUriEndpoint * self,
   if (self->priv->state == state)
     return;
 
+  GST_DEBUG_OBJECT (self, "State changed from %s to %s",
+      kms_uriendpoint_state_to_string (self->priv->state),
+      kms_uriendpoint_state_to_string (state));
+
   self->priv->state = state;
   g_signal_emit (G_OBJECT (self), kms_uri_endpoint_signals[STATE_CHANGED], 0,
       state);
 }
 
-static void
-kms_uri_endpoint_change_state (KmsUriEndpoint * self, KmsUriEndpointState next)
+static gboolean
+kms_uri_endpoint_change_state (KmsUriEndpoint * self, KmsUriEndpointState next,
+    GError ** err)
 {
-  if (self->priv->state == next)
-    return;
+  if (self->priv->state == next) {
+    g_set_error (err, KMS_URI_ENDPOINT_ERROR,
+        KMS_URI_ENDPOINT_INVALID_TRANSITION, "Already in state %s",
+        kms_uriendpoint_state_to_string (next));
+
+    return FALSE;
+  }
 
   switch (next) {
     case KMS_URI_ENDPOINT_STATE_STOP:
-      CALL_IF_DEFINED (self, KMS_URI_ENDPOINT_GET_CLASS (self)->stopped,
-          "STOPPED");
-      break;
+      return CALL_IF_DEFINED (self, KMS_URI_ENDPOINT_GET_CLASS (self)->stopped,
+          err);
     case KMS_URI_ENDPOINT_STATE_START:
-      CALL_IF_DEFINED (self, KMS_URI_ENDPOINT_GET_CLASS (self)->started,
-          "STARTED");
-      break;
+      return CALL_IF_DEFINED (self, KMS_URI_ENDPOINT_GET_CLASS (self)->started,
+          err);
     case KMS_URI_ENDPOINT_STATE_PAUSE:
-      CALL_IF_DEFINED (self, KMS_URI_ENDPOINT_GET_CLASS (self)->paused,
-          "PAUSED");
-      break;
+      return CALL_IF_DEFINED (self, KMS_URI_ENDPOINT_GET_CLASS (self)->paused,
+          err);
   }
+
+  g_set_error (err, KMS_URI_ENDPOINT_ERROR,
+      KMS_URI_ENDPOINT_UNEXPECTED_ERROR, "Invalid state %u", next);
+
+  return FALSE;
+}
+
+gboolean
+kms_uri_endpoint_set_state (KmsUriEndpoint * self, KmsUriEndpointState next,
+    GError ** err)
+{
+  gboolean ret;
+
+  KMS_ELEMENT_LOCK (KMS_ELEMENT (self));
+  ret = kms_uri_endpoint_change_state (self, next, err);
+  KMS_ELEMENT_UNLOCK (KMS_ELEMENT (self));
+
+  return ret;
+}
+
+KmsUriEndpointState
+kms_uri_endpoint_get_state (KmsUriEndpoint * self)
+{
+  return self->priv->state;
 }
 
 static void
@@ -122,7 +176,7 @@ kms_uri_endpoint_set_property (GObject * object, guint property_id,
       self->uri = g_value_dup_string (value);
       break;
     case PROP_STATE:
-      kms_uri_endpoint_change_state (self, g_value_get_enum (value));
+      kms_uri_endpoint_change_state (self, g_value_get_enum (value), NULL);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);

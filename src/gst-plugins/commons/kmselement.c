@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2013 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifdef HAVE_CONFIG_H
@@ -35,7 +37,7 @@
 
 #define DEFAULT_MIN_BITRATE 0
 #define DEFAULT_MAX_BITRATE G_MAXINT
-#define MEDIA_FLOW_INTERNAL_TIME_SEC 2
+#define MEDIA_FLOW_INTERNAL_TIME_MSEC 2000
 
 GST_DEBUG_CATEGORY_STATIC (kms_element_debug_category);
 #define GST_CAT_DEFAULT kms_element_debug_category
@@ -115,15 +117,27 @@ typedef enum _KmsMediaFlowType
 
 typedef struct _KmsMediaFlowData
 {
+  KmsRefStruct ref;
+
   GWeakRef element;
   KmsElementPadType type;
   char *pad_description;
-  /* Media Flow signal */
-  GstClockID clock_id;
   gint media_flowing;
   gint buffers;
   KmsMediaFlowType media_flow_type;
 } KmsMediaFlowData;
+
+typedef struct _KmsMediaFlowTimeoutData
+{
+  KmsRefStruct ref;
+
+  KmsMediaFlowData *media_flow_data;
+
+  /* Media Flow signal */
+  GOnce init;
+  KmsLoop *loop;
+  guint source_id;
+} KmsMediaFlowTimeoutData;
 
 struct _KmsElementPrivate
 {
@@ -214,15 +228,25 @@ create_output_element_data (KmsElementPadType type)
   return data;
 }
 
+static void
+media_flow_data_destroy (KmsMediaFlowData * data)
+{
+  g_free (data->pad_description);
+  g_weak_ref_clear (&data->element);
+
+  g_slice_free (KmsMediaFlowData, data);
+}
+
 static KmsMediaFlowData *
-create_media_flow_data (KmsElement * self, const gchar * description,
+media_flow_data_new (KmsElement * self, const gchar * description,
     KmsElementPadType type, KmsMediaFlowType media_flow_type)
 {
   KmsMediaFlowData *data;
-  GstClock *clk;
-  GstClockTime init_time;
 
   data = g_slice_new0 (KmsMediaFlowData);
+
+  kms_ref_struct_init (KMS_REF_STRUCT_CAST (data),
+      (GDestroyNotify) media_flow_data_destroy);
 
   data->pad_description = g_strdup (description);
   data->media_flowing = 0;
@@ -231,36 +255,64 @@ create_media_flow_data (KmsElement * self, const gchar * description,
   data->type = type;
   data->media_flow_type = media_flow_type;
 
-  clk = gst_system_clock_obtain ();
+  return data;
+}
 
-  if (!clk) {
-    GST_ERROR ("Imposible get the clock");
-    return data;
+static void
+media_flow_data_unref (KmsMediaFlowData * data)
+{
+  kms_ref_struct_unref ((KmsRefStruct *) data);
+}
+
+static KmsMediaFlowData *
+media_flow_data_ref (KmsMediaFlowData * data)
+{
+  return (KmsMediaFlowData *) kms_ref_struct_ref ((KmsRefStruct *) data);
+}
+
+static void
+media_flow_timeout_data_destroy (KmsMediaFlowTimeoutData * data)
+{
+  if (data->source_id != 0) {
+    kms_loop_remove (data->loop, data->source_id);
   }
 
-  init_time = gst_clock_get_time (clk);
-  data->clock_id = gst_clock_new_periodic_id (clk, init_time,
-      MEDIA_FLOW_INTERNAL_TIME_SEC * GST_SECOND);
-  g_object_unref (clk);
+  media_flow_data_unref (data->media_flow_data);
+
+  g_slice_free (KmsMediaFlowTimeoutData, data);
+}
+
+static KmsMediaFlowTimeoutData *
+media_flow_timeout_data_new (KmsElement * self, const gchar * description,
+    KmsElementPadType type, KmsMediaFlowType media_flow_type)
+{
+  KmsElementClass *klass = KMS_ELEMENT_GET_CLASS (self);
+  KmsMediaFlowTimeoutData *data;
+
+  data = g_slice_new0 (KmsMediaFlowTimeoutData);
+
+  kms_ref_struct_init (KMS_REF_STRUCT_CAST (data),
+      (GDestroyNotify) media_flow_timeout_data_destroy);
+
+  data->media_flow_data =
+      media_flow_data_new (self, description, type, media_flow_type);
+  data->init.status = G_ONCE_STATUS_NOTCALLED;
+  data->source_id = 0;
+  data->loop = klass->loop;
 
   return data;
 }
 
 static void
-stop_clock_id (KmsMediaFlowData * data)
+media_flow_timeout_data_unref (KmsMediaFlowTimeoutData * data)
 {
-  //detroy periodic callback
-  gst_clock_id_unschedule (data->clock_id);
-  gst_clock_id_unref (data->clock_id);
+  kms_ref_struct_unref ((KmsRefStruct *) data);
 }
 
-static void
-destroy_media_flow_data (KmsMediaFlowData * data)
+static KmsMediaFlowTimeoutData *
+media_flow_timeout_data_ref (KmsMediaFlowTimeoutData * data)
 {
-  g_free (data->pad_description);
-  g_weak_ref_clear (&data->element);
-
-  g_slice_free (KmsMediaFlowData, data);
+  return (KmsMediaFlowTimeoutData *) kms_ref_struct_ref ((KmsRefStruct *) data);
 }
 
 static void
@@ -499,59 +551,15 @@ GstElement *
 kms_element_get_data_output_element (KmsElement * self,
     const gchar * description)
 {
-  GstElement *sink, *tee;
-  KmsOutputElementData *odata;
-  const gchar *desc;
-
-  desc = KMS_FORMAT_PAD_DESCRIPTION (description);
-
-  GST_DEBUG_OBJECT (self, "Output element requested for track %s, stream %s",
-      kms_element_pad_type_str (KMS_ELEMENT_PAD_TYPE_DATA), desc);
-
-  KMS_ELEMENT_LOCK (self);
-
-  odata = kms_element_get_output_element_data (self, KMS_ELEMENT_PAD_TYPE_DATA,
-      desc);
-  if (odata == NULL) {
-    gchar *key;
-
-    key = create_id_from_pad_attrs (KMS_ELEMENT_PAD_TYPE_DATA, GST_PAD_SRC,
-        desc);
-    GST_DEBUG_OBJECT (self, "New output element for track %s, stream %s",
-        kms_element_pad_type_str (KMS_ELEMENT_PAD_TYPE_DATA), key);
-    odata = create_output_element_data (KMS_ELEMENT_PAD_TYPE_DATA);
-    g_hash_table_insert (self->priv->output_elements, key, odata);
-  }
-
-  if (odata->element != NULL) {
-    KMS_ELEMENT_UNLOCK (self);
-    return odata->element;
-  }
-
-  tee = gst_element_factory_make ("tee", NULL);
-
-  sink = gst_element_factory_make ("fakesink", NULL);
-  g_object_set (sink, "sync", FALSE, "async", FALSE, NULL);
-
-  gst_bin_add_many (GST_BIN (self), tee, sink, NULL);
-  gst_element_link (tee, sink);
-
-  odata->element = tee;
-  KMS_ELEMENT_UNLOCK (self);
-
-  gst_element_sync_state_with_parent (sink);
-  gst_element_sync_state_with_parent (tee);
-
-  kms_element_create_pending_src_pads (self, KMS_ELEMENT_PAD_TYPE_DATA, desc,
-      odata->element);
-
-  return odata->element;
+  return kms_element_get_output_element (self, KMS_ELEMENT_PAD_TYPE_DATA,
+      description);
 }
 
 static GstPadProbeReturn
 cb_buffer_received (GstPad * pad, GstPadProbeInfo * info, gpointer data)
 {
-  KmsMediaFlowData *fd_data = (KmsMediaFlowData *) data;
+  KmsMediaFlowTimeoutData *fdto_data = (KmsMediaFlowTimeoutData *) data;
+  KmsMediaFlowData *fd_data = fdto_data->media_flow_data;
   gpointer weak_ptr = g_weak_ref_get (&fd_data->element);
   KmsElement *element;
 
@@ -580,15 +588,19 @@ cb_buffer_received (GstPad * pad, GstPadProbeInfo * info, gpointer data)
 }
 
 gboolean
-check_if_flow_media (GstClock * clock,
-    GstClockTime time, GstClockID id, gpointer user_data)
+check_if_flow_media (gpointer user_data)
 {
   KmsMediaFlowData *data = (KmsMediaFlowData *) user_data;
-  gpointer weak_ptr = g_weak_ref_get (&data->element);
+  gpointer weak_ptr;
   KmsElement *element;
 
+  if (g_source_is_destroyed (g_main_current_source ())) {
+    return G_SOURCE_REMOVE;
+  }
+
+  weak_ptr = g_weak_ref_get (&data->element);
   if (weak_ptr == NULL) {
-    return FALSE;
+    return G_SOURCE_REMOVE;
   }
 
   element = KMS_ELEMENT (weak_ptr);
@@ -611,64 +623,66 @@ check_if_flow_media (GstClock * clock,
 
   g_object_unref (element);
 
-  return FALSE;
+  return G_SOURCE_CONTINUE;
 }
 
-GstElement *
-kms_element_get_audio_output_element (KmsElement * self,
-    const gchar * description)
+static gpointer
+attach_timeout (gpointer data)
 {
-  KmsOutputElementData *odata;
-  const gchar *desc;
-  GstPad *sink_pad;
-  KmsMediaFlowData *fd_data;
+  KmsMediaFlowTimeoutData *fdto_data = data;
+  KmsMediaFlowData *fd_data = fdto_data->media_flow_data;
 
-  desc = KMS_FORMAT_PAD_DESCRIPTION (description);
+  fdto_data->source_id = kms_loop_timeout_add_full (fdto_data->loop,
+      G_PRIORITY_DEFAULT, MEDIA_FLOW_INTERNAL_TIME_MSEC, check_if_flow_media,
+      media_flow_data_ref (fd_data), (GDestroyNotify) media_flow_data_unref);
 
-  GST_DEBUG_OBJECT (self, "Output element requested for track %s, stream %s",
-      kms_element_pad_type_str (KMS_ELEMENT_PAD_TYPE_AUDIO), desc);
+  return NULL;
+}
 
-  KMS_ELEMENT_LOCK (self);
+static void
+add_flow_event_probes (GstPad * pad, KmsMediaFlowTimeoutData * fdto_data)
+{
+  gst_pad_add_probe (pad,
+      GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST,
+      (GstPadProbeCallback) cb_buffer_received,
+      media_flow_timeout_data_ref (fdto_data),
+      (GDestroyNotify) media_flow_timeout_data_unref);
 
-  odata = kms_element_get_output_element_data (self, KMS_ELEMENT_PAD_TYPE_AUDIO,
-      desc);
-  if (odata == NULL) {
-    gchar *key;
+  /* TODO: the timeout could be detached when all pads are removed,
+     but it must be added if a new pad is added */
+  g_once (&fdto_data->init, attach_timeout, fdto_data);
+}
 
-    key = create_id_from_pad_attrs (KMS_ELEMENT_PAD_TYPE_AUDIO, GST_PAD_SRC,
-        desc);
-    GST_DEBUG_OBJECT (self, "New output element for track %s, stream %s",
-        kms_element_pad_type_str (KMS_ELEMENT_PAD_TYPE_AUDIO), key);
-    odata = create_output_element_data (KMS_ELEMENT_PAD_TYPE_AUDIO);
-    g_hash_table_insert (self->priv->output_elements, key, odata);
+static void
+add_flow_event_probes_pad_added (GstElement * element, GstPad * pad,
+    KmsMediaFlowTimeoutData * fdto_data)
+{
+  if (!GST_PAD_IS_SINK (pad)) {
+    return;
   }
 
-  if (odata->element != NULL) {
-    KMS_ELEMENT_UNLOCK (self);
-    return odata->element;
-  }
+  add_flow_event_probes (pad, fdto_data);
+}
 
-  odata->element = KMS_ELEMENT_GET_CLASS (self)->create_output_element (self);
+static void
+media_flow_data_destroy_closure (gpointer data, GClosure * closure)
+{
+  KmsMediaFlowTimeoutData *fdto_data = data;
 
-  fd_data =
-      create_media_flow_data (self, desc, KMS_ELEMENT_PAD_TYPE_AUDIO,
-      KMS_MEDIA_FLOW_OUT);
-  sink_pad = gst_element_get_static_pad (odata->element, "sink");
-  gst_pad_add_probe (sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
-      (GstPadProbeCallback) cb_buffer_received, fd_data,
-      (GDestroyNotify) stop_clock_id);
-  g_object_unref (sink_pad);
-  gst_clock_id_wait_async (fd_data->clock_id,
-      check_if_flow_media, fd_data, (GDestroyNotify) destroy_media_flow_data);
+  media_flow_timeout_data_unref (fdto_data);
+}
 
-  gst_bin_add (GST_BIN (self), odata->element);
-  gst_element_sync_state_with_parent (odata->element);
-  KMS_ELEMENT_UNLOCK (self);
+static void
+add_flow_out_event_probes_to_element_sinks (GstElement * element,
+    KmsMediaFlowTimeoutData * fdto_data)
+{
+  g_signal_connect_data (element, "pad-added",
+      G_CALLBACK (add_flow_event_probes_pad_added),
+      media_flow_timeout_data_ref (fdto_data), media_flow_data_destroy_closure,
+      0);
 
-  kms_element_create_pending_src_pads (self, KMS_ELEMENT_PAD_TYPE_AUDIO, desc,
-      odata->element);
-
-  return odata->element;
+  kms_element_for_each_sink_pad (element,
+      (KmsPadCallback) add_flow_event_probes, fdto_data);
 }
 
 static void
@@ -686,31 +700,27 @@ kms_element_set_video_output_properties (KmsElement * self,
 }
 
 GstElement *
-kms_element_get_video_output_element (KmsElement * self,
+kms_element_get_output_element (KmsElement * self, KmsElementPadType pad_type,
     const gchar * description)
 {
   KmsOutputElementData *odata;
   const gchar *desc;
-  GstPad *sink_pad;
-  KmsMediaFlowData *fd_data;
 
   desc = KMS_FORMAT_PAD_DESCRIPTION (description);
 
   GST_DEBUG_OBJECT (self, "Output element requested for track %s, stream %s",
-      kms_element_pad_type_str (KMS_ELEMENT_PAD_TYPE_VIDEO), desc);
+      kms_element_pad_type_str (pad_type), desc);
 
   KMS_ELEMENT_LOCK (self);
 
-  odata = kms_element_get_output_element_data (self, KMS_ELEMENT_PAD_TYPE_VIDEO,
-      desc);
+  odata = kms_element_get_output_element_data (self, pad_type, desc);
   if (odata == NULL) {
     gchar *key;
 
-    key = create_id_from_pad_attrs (KMS_ELEMENT_PAD_TYPE_VIDEO, GST_PAD_SRC,
-        desc);
+    key = create_id_from_pad_attrs (pad_type, GST_PAD_SRC, desc);
     GST_DEBUG_OBJECT (self, "New output element for track %s, stream %s",
-        kms_element_pad_type_str (KMS_ELEMENT_PAD_TYPE_VIDEO), key);
-    odata = create_output_element_data (KMS_ELEMENT_PAD_TYPE_VIDEO);
+        kms_element_pad_type_str (pad_type), key);
+    odata = create_output_element_data (pad_type);
     g_hash_table_insert (self->priv->output_elements, key, odata);
   }
 
@@ -719,30 +729,85 @@ kms_element_get_video_output_element (KmsElement * self,
     return odata->element;
   }
 
-  odata->element = KMS_ELEMENT_GET_CLASS (self)->create_output_element (self);
+  if (pad_type == KMS_ELEMENT_PAD_TYPE_DATA) {
+    GstElement *tee, *sink;
 
-  fd_data =
-      create_media_flow_data (self, desc, KMS_ELEMENT_PAD_TYPE_VIDEO,
-      KMS_MEDIA_FLOW_OUT);
-  sink_pad = gst_element_get_static_pad (odata->element, "sink");
-  gst_pad_add_probe (sink_pad, GST_PAD_PROBE_TYPE_BUFFER,
-      (GstPadProbeCallback) cb_buffer_received, fd_data,
-      (GDestroyNotify) stop_clock_id);
-  g_object_unref (sink_pad);
-  gst_clock_id_wait_async (fd_data->clock_id,
-      check_if_flow_media, fd_data, (GDestroyNotify) destroy_media_flow_data);
+    tee = gst_element_factory_make ("tee", NULL);
 
-  /* Set video properties to the new element */
-  kms_element_set_video_output_properties (self, odata->element);
+    sink = gst_element_factory_make ("fakesink", NULL);
+    g_object_set (sink, "sync", FALSE, "async", FALSE, NULL);
 
-  gst_bin_add (GST_BIN (self), odata->element);
-  gst_element_sync_state_with_parent (odata->element);
-  KMS_ELEMENT_UNLOCK (self);
+    gst_bin_add_many (GST_BIN (self), tee, sink, NULL);
+    gst_element_link (tee, sink);
 
-  kms_element_create_pending_src_pads (self, KMS_ELEMENT_PAD_TYPE_VIDEO, desc,
-      odata->element);
+    odata->element = tee;
+    KMS_ELEMENT_UNLOCK (self);
+
+    gst_element_sync_state_with_parent (sink);
+    gst_element_sync_state_with_parent (tee);
+  } else {
+    KmsMediaFlowTimeoutData *fdto_data;
+
+    odata->element = KMS_ELEMENT_GET_CLASS (self)->create_output_element (self);
+    fdto_data =
+        media_flow_timeout_data_new (self, desc, pad_type, KMS_MEDIA_FLOW_OUT);
+    add_flow_out_event_probes_to_element_sinks (odata->element, fdto_data);
+    media_flow_timeout_data_unref (fdto_data);
+
+    /* Set video properties to the new element */
+    if (pad_type == KMS_ELEMENT_PAD_TYPE_VIDEO) {
+      kms_element_set_video_output_properties (self, odata->element);
+    }
+
+    gst_bin_add (GST_BIN (self), odata->element);
+    gst_element_sync_state_with_parent (odata->element);
+    KMS_ELEMENT_UNLOCK (self);
+  }
+
+  kms_element_create_pending_src_pads (self, pad_type, desc, odata->element);
 
   return odata->element;
+}
+
+GstElement *
+kms_element_get_output_element_from_media_type (KmsElement * self,
+    KmsMediaType media_type, const gchar * description)
+{
+  KmsElementPadType pad_type;
+
+  switch (media_type) {
+    case KMS_MEDIA_TYPE_AUDIO:
+      pad_type = KMS_ELEMENT_PAD_TYPE_AUDIO;
+      break;
+    case KMS_MEDIA_TYPE_VIDEO:
+      pad_type = KMS_ELEMENT_PAD_TYPE_VIDEO;
+      break;
+    case KMS_MEDIA_TYPE_DATA:
+      pad_type = KMS_ELEMENT_PAD_TYPE_DATA;
+      break;
+    default:
+      GST_ERROR_OBJECT (self,
+          "Invalid media type while requesting output element");
+      return NULL;
+  }
+
+  return kms_element_get_output_element (self, pad_type, description);
+}
+
+GstElement *
+kms_element_get_audio_output_element (KmsElement * self,
+    const gchar * description)
+{
+  return kms_element_get_output_element (self, KMS_ELEMENT_PAD_TYPE_AUDIO,
+      description);
+}
+
+GstElement *
+kms_element_get_video_output_element (KmsElement * self,
+    const gchar * description)
+{
+  return kms_element_get_output_element (self, KMS_ELEMENT_PAD_TYPE_VIDEO,
+      description);
 }
 
 static void
@@ -763,19 +828,19 @@ accept_eos_probe (GstPad * pad, GstPadProbeInfo * info, gpointer data)
   if (type == GST_EVENT_EOS || type == GST_EVENT_FLUSH_START
       || type == GST_EVENT_FLUSH_STOP) {
     KmsElement *self;
-    gboolean accept;
+    GstPadProbeReturn ret;
 
     self = KMS_ELEMENT (data);
-    KMS_ELEMENT_LOCK (self);
-    accept = self->priv->accept_eos;
-    KMS_ELEMENT_UNLOCK (self);
 
-    if (!accept) {
+    if (!g_atomic_int_get (&self->priv->accept_eos)) {
       GST_DEBUG_OBJECT (pad, "Event %s dropped",
           gst_event_type_get_name (type));
+      ret = GST_PAD_PROBE_DROP;
+    } else {
+      ret = GST_PAD_PROBE_OK;
     }
 
-    return (accept) ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
+    return ret;
   }
 
   return GST_PAD_PROBE_OK;
@@ -901,7 +966,6 @@ kms_element_connect_sink_target_full (KmsElement * self, GstPad * target,
   GstPad *pad;
   gchar *pad_name;
   GstPadTemplate *templ;
-  KmsMediaFlowData *fd_data;
 
   templ = gst_static_pad_template_get (&sink_factory);
 
@@ -955,17 +1019,43 @@ end:
   //add probe for media flow in signal
   if ((type == KMS_ELEMENT_PAD_TYPE_VIDEO)
       || (type == KMS_ELEMENT_PAD_TYPE_AUDIO)) {
-    fd_data =
-        create_media_flow_data (self, KMS_FORMAT_PAD_DESCRIPTION (description),
-        type, KMS_MEDIA_FLOW_IN);
-    gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER,
-        (GstPadProbeCallback) cb_buffer_received, fd_data,
-        (GDestroyNotify) stop_clock_id);
-    gst_clock_id_wait_async (fd_data->clock_id, check_if_flow_media, fd_data,
-        (GDestroyNotify) destroy_media_flow_data);
+    KmsMediaFlowTimeoutData *fdto_data;
+
+    fdto_data =
+        media_flow_timeout_data_new (self,
+        KMS_FORMAT_PAD_DESCRIPTION (description), type, KMS_MEDIA_FLOW_IN);
+    add_flow_event_probes (pad, fdto_data);
+    media_flow_timeout_data_unref (fdto_data);
   }
 
   return pad;
+}
+
+GstPad *
+kms_element_connect_sink_target_full_by_media_type (KmsElement * self,
+    GstPad * target, KmsMediaType media_type, const gchar * description,
+    KmsAddPadFunc func, gpointer user_data)
+{
+  KmsElementPadType pad_type;
+
+  switch (media_type) {
+    case KMS_MEDIA_TYPE_AUDIO:
+      pad_type = KMS_ELEMENT_PAD_TYPE_AUDIO;
+      break;
+    case KMS_MEDIA_TYPE_VIDEO:
+      pad_type = KMS_ELEMENT_PAD_TYPE_VIDEO;
+      break;
+    case KMS_MEDIA_TYPE_DATA:
+      pad_type = KMS_ELEMENT_PAD_TYPE_DATA;
+      break;
+    default:
+      GST_ERROR_OBJECT (self,
+          "Invalid media type while requesting output element");
+      return NULL;
+  }
+
+  return kms_element_connect_sink_target_full (self, target, pad_type,
+      description, func, user_data);
 }
 
 static gint
@@ -1133,9 +1223,7 @@ kms_element_set_property (GObject * object, guint property_id,
 
   switch (property_id) {
     case PROP_ACCEPT_EOS:
-      KMS_ELEMENT_LOCK (self);
-      self->priv->accept_eos = g_value_get_boolean (value);
-      KMS_ELEMENT_UNLOCK (self);
+      g_atomic_int_set (&self->priv->accept_eos, g_value_get_boolean (value));
       break;
     case PROP_AUDIO_CAPS:
       kms_element_endpoint_set_caps (self, gst_value_get_caps (value),
@@ -1215,9 +1303,7 @@ kms_element_get_property (GObject * object, guint property_id,
 
   switch (property_id) {
     case PROP_ACCEPT_EOS:
-      KMS_ELEMENT_LOCK (self);
-      g_value_set_boolean (value, self->priv->accept_eos);
-      KMS_ELEMENT_UNLOCK (self);
+      g_value_set_boolean (value, g_atomic_int_get (&self->priv->accept_eos));
       break;
     case PROP_AUDIO_CAPS:
       g_value_take_boxed (value, kms_element_endpoint_get_caps (self,
@@ -1301,7 +1387,7 @@ kms_element_request_new_srcpad (KmsElement * self,
   KmsOutputElementData *odata;
   gchar *pad_name, *key;
   guint counter = 0;
-  gboolean added = FALSE;
+  gboolean added = TRUE;
 
   desc = KMS_FORMAT_PAD_DESCRIPTION (description);
 
@@ -1341,7 +1427,7 @@ kms_element_request_new_srcpad (KmsElement * self,
       return NULL;
     }
 
-    added = ret == KMS_REQUEST_NEW_SRC_ELEMENT_OK;
+    added = ret != KMS_REQUEST_NEW_SRC_ELEMENT_NOT_SUPPORTED;
   }
 
   if (odata->element == NULL) {
@@ -1355,7 +1441,7 @@ kms_element_request_new_srcpad (KmsElement * self,
     KMS_ELEMENT_UNLOCK (self);
   } else {
     KMS_ELEMENT_UNLOCK (self);
-    if (!added) {
+    if (added) {
       kms_element_add_src_pad (self, odata->element, pad_name, templ_name);
     }
   }
@@ -1499,28 +1585,27 @@ kms_element_release_requested_pad_action (KmsElement * self,
         gchar *name;
 
         pad = g_value_get_object (&item);
-        name = gst_pad_get_name (pad);
+        name = GST_OBJECT_NAME (pad);
 
-        switch (gst_pad_get_direction (pad)) {
-          case GST_PAD_SRC:
-            if ((released = g_strcmp0 (name, pad_name) == 0)) {
+        if ((released = g_strcmp0 (name, pad_name) == 0)) {
+          switch (gst_pad_get_direction (pad)) {
+            case GST_PAD_SRC:
               kms_element_remove_target_pad (self, pad);
               kms_element_release_pad (GST_ELEMENT (self), pad);
               done = TRUE;
-            }
-            break;
-          case GST_PAD_SINK:
-            /* Dynamic sink pads are managed by subclasses */
-            done = released =
-                KMS_ELEMENT_GET_CLASS (self)->release_requested_sink_pad (self,
-                pad);
-            break;
-          default:
-            GST_WARNING_OBJECT (self, "Unknown direction %" GST_PTR_FORMAT,
-                pad);
+              break;
+            case GST_PAD_SINK:
+              /* Dynamic sink pads are managed by subclasses */
+              done = released =
+                  KMS_ELEMENT_GET_CLASS (self)->release_requested_sink_pad
+                  (self, pad);
+              break;
+            default:
+              GST_WARNING_OBJECT (self, "Unknown direction %" GST_PTR_FORMAT,
+                  pad);
+          }
         }
 
-        g_free (name);
         g_value_reset (&item);
         break;
       }
@@ -1830,6 +1915,8 @@ kms_element_class_init (KmsElementClass * klass)
   klass->stats = GST_DEBUG_FUNCPTR (kms_element_stats_impl);
 
   g_type_class_add_private (klass, sizeof (KmsElementPrivate));
+
+  klass->loop = kms_loop_new ();
 }
 
 static void

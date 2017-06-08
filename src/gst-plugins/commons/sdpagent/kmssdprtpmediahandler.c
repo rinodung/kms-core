@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2015 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifdef HAVE_CONFIG_H
@@ -101,13 +103,13 @@ kms_sdp_rtp_media_handler_set_property (GObject * object, guint prop_id,
 static gboolean
 kms_sdp_rtp_media_handler_can_insert_attribute (KmsSdpMediaHandler *
     handler, const GstSDPMedia * offer, const GstSDPAttribute * attr,
-    GstSDPMedia * answer, SdpMessageContext * ctx)
+    GstSDPMedia * answer, const GstSDPMessage * msg)
 {
   KmsSdpRtpMediaHandler *self = KMS_SDP_RTP_MEDIA_HANDLER (handler);
 
   if (g_strcmp0 (attr->key, "rtcp-mux") != 0) {
     return KMS_SDP_MEDIA_HANDLER_CLASS (parent_class)->can_insert_attribute
-        (handler, offer, attr, answer, ctx);
+        (handler, offer, attr, answer, msg);
   }
 
   if (!self->priv->rtcp_mux) {
@@ -126,7 +128,7 @@ struct IntersectAttrData
   KmsSdpMediaHandler *handler;
   const GstSDPMedia *offer;
   GstSDPMedia *answer;
-  SdpMessageContext *ctx;
+  const GstSDPMessage *msg;
 };
 
 static gboolean
@@ -136,7 +138,7 @@ instersect_rtp_media_attr (const GstSDPAttribute * attr, gpointer user_data)
 
   if (!KMS_SDP_MEDIA_HANDLER_GET_CLASS (data->
           handler)->can_insert_attribute (data->handler, data->offer, attr,
-          data->answer, data->ctx)) {
+          data->answer, data->msg)) {
     return FALSE;
   }
 
@@ -151,14 +153,14 @@ instersect_rtp_media_attr (const GstSDPAttribute * attr, gpointer user_data)
 
 static gboolean
 kms_sdp_rtp_media_handler_intersect_sdp_medias (KmsSdpMediaHandler * handler,
-    const GstSDPMedia * offer, GstSDPMedia * answer, SdpMessageContext * ctx,
+    const GstSDPMedia * offer, GstSDPMedia * answer, const GstSDPMessage * msg,
     GError ** error)
 {
   struct IntersectAttrData data = {
     .handler = handler,
     .offer = offer,
     .answer = answer,
-    .ctx = ctx
+    .msg = msg
   };
 
   if (!sdp_utils_intersect_media_attributes (offer,
@@ -173,7 +175,7 @@ kms_sdp_rtp_media_handler_intersect_sdp_medias (KmsSdpMediaHandler * handler,
 
 static gboolean
 kms_sdp_rtp_media_handler_add_offer_attributes (KmsSdpMediaHandler * handler,
-    GstSDPMedia * offer, GError ** error)
+    GstSDPMedia * offer, const GstSDPMedia * prev_offer, GError ** error)
 {
   KmsSdpRtpMediaHandler *self = KMS_SDP_RTP_MEDIA_HANDLER (handler);
 
@@ -202,7 +204,7 @@ kms_sdp_rtp_media_handler_add_offer_attributes (KmsSdpMediaHandler * handler,
 
   return
       KMS_SDP_MEDIA_HANDLER_CLASS (parent_class)->add_offer_attributes (handler,
-      offer, error);
+      offer, prev_offer, error);
 }
 
 static gboolean

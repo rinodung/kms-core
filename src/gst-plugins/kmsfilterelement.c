@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2013 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 #ifdef HAVE_CONFIG_H
@@ -75,17 +77,23 @@ G_DEFINE_TYPE_WITH_CODE (KmsFilterElement, kms_filter_element,
 
 static void
 kms_filter_element_connect_filter (KmsFilterElement * self,
-    KmsElementPadType type, GstElement * filter, GstPad * target,
-    GstElement * agnosticbin)
+    KmsElementPadType type, GstElement * filter, GstElement * agnosticbin)
 {
-  gst_bin_add (GST_BIN (self), filter);
+  GstElement *queue = gst_element_factory_make ("queue", NULL);
+  GstPad *target = gst_element_get_static_pad (queue, "sink");
+
+  g_object_set (queue, "leaky", 2, "max-size-buffers", 1, NULL);
+
+  gst_bin_add_many (GST_BIN (self), queue, filter, NULL);
 
   self->priv->filter = filter;
 
-  gst_element_link (filter, agnosticbin);
+  gst_element_link_many (queue, filter, agnosticbin, NULL);
   gst_element_sync_state_with_parent (filter);
+  gst_element_sync_state_with_parent (queue);
 
   kms_element_connect_sink_target (KMS_ELEMENT (self), target, type);
+  g_object_unref (target);
 }
 
 static void
@@ -171,12 +179,12 @@ kms_filter_element_set_filter (KmsFilterElement * self, GstElement * filter)
 
   if (self->priv->filter_type == KMS_FILTER_TYPE_VIDEO) {
     kms_filter_element_connect_filter (self, KMS_ELEMENT_PAD_TYPE_VIDEO, filter,
-        sink, kms_element_get_video_agnosticbin (KMS_ELEMENT (self)));
+        kms_element_get_video_agnosticbin (KMS_ELEMENT (self)));
     kms_filter_element_connect_passthrough (self, KMS_ELEMENT_PAD_TYPE_AUDIO,
         kms_element_get_audio_agnosticbin (KMS_ELEMENT (self)));
   } else if (self->priv->filter_type == KMS_FILTER_TYPE_AUDIO) {
     kms_filter_element_connect_filter (self, KMS_ELEMENT_PAD_TYPE_AUDIO, filter,
-        sink, kms_element_get_audio_agnosticbin (KMS_ELEMENT (self)));
+        kms_element_get_audio_agnosticbin (KMS_ELEMENT (self)));
     kms_filter_element_connect_passthrough (self, KMS_ELEMENT_PAD_TYPE_VIDEO,
         kms_element_get_video_agnosticbin (KMS_ELEMENT (self)));
   } else {

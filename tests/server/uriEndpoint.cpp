@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2015 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
@@ -143,13 +145,37 @@ BOOST_AUTO_TEST_CASE (check_media_element_uri)
     BOOST_ERROR ("Wrong URI returned by UriEndpoint");
   }
 
-  g_object_get (G_OBJECT(uriEndpoint->getGstreamerElement()), "uri", &uri_value, NULL);
+  g_object_get (G_OBJECT (uriEndpoint->getGstreamerElement() ), "uri", &uri_value,
+                NULL);
 
-  if (g_strcmp0 (uri_value, expected_uri.c_str ()) != 0) {
+  if (g_strcmp0 (uri_value, expected_uri.c_str () ) != 0) {
     BOOST_ERROR ("Wrong URI returned by gstreamer element");
   }
 
   g_free (uri_value);
+
+  releaseMediaObject (uriEndpoint->getId() );
+  releaseMediaObject (mediaPipelineId);
+
+  uriEndpoint.reset ();
+}
+
+BOOST_AUTO_TEST_CASE (check_uri_with_escaped_slashes)
+{
+  std::string uri;
+  std::string first_uri =
+    "https://test.com/026cba3020160826100051.mp4?params=host&user=AKIAIHFQODXEKWDTKIRQ%2F20160826%2Ftest%2Fs3%2Floc4_request&pass=db575aaf678085c2595df3bc3bc614";
+
+  mediaPipelineId =
+    moduleManager.getFactory ("MediaPipeline")->createObject (
+      config, "",
+      Json::Value() )->getId();
+
+  config.add ("modules.kurento.UriEndpoint.configPath", "../../../tests" );
+  config.add ("modules.kurento.UriEndpoint.defaultPath", "file:///var/kurento/");
+
+  std::shared_ptr <UriEndpointImpl> uriEndpoint = generateUriEndpoint (
+        mediaPipelineId, first_uri);
 
   releaseMediaObject (uriEndpoint->getId() );
   releaseMediaObject (mediaPipelineId);

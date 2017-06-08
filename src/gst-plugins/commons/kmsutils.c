@@ -1,15 +1,17 @@
 /*
  * (C) Copyright 2013 Kurento (http://kurento.org/)
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 which accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
  *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  *
  */
 
@@ -23,14 +25,21 @@
 #define GST_CAT_DEFAULT kmsutils
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
 #define GST_DEFAULT_NAME "kmsutils"
-#define LAST_KEY_FRAME_REQUEST_TIME "kmslastkeyframe"
+
+#define LAST_KEY_FRAME_REQUEST_TIME "last-key-frame-request-time"
+G_DEFINE_QUARK (LAST_KEY_FRAME_REQUEST_TIME, last_key_frame_request_time);
+
+#define KMS_KEY_ID "kms-key-id"
+G_DEFINE_QUARK (KMS_KEY_ID, kms_key_id);
 
 #define DEFAULT_KEYFRAME_DISPERSION GST_SECOND  /* 1s */
 
 #define UUID_STR_SIZE 37        /* 36-byte string (plus tailing '\0') */
-#define KMS_KEY_ID "kms-key-id"
 #define BEGIN_CERTIFICATE "-----BEGIN CERTIFICATE-----"
 #define END_CERTIFICATE "-----END CERTIFICATE-----"
+
+#define buffer_is_keyframe(buffer) \
+    (!GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_DELTA_UNIT))
 
 static gboolean
 debug_graph (gpointer bin)
@@ -104,6 +113,7 @@ static GstStaticCaps static_audio_caps =
 GST_STATIC_CAPS (KMS_AGNOSTIC_AUDIO_CAPS);
 static GstStaticCaps static_video_caps =
 GST_STATIC_CAPS (KMS_AGNOSTIC_VIDEO_CAPS);
+static GstStaticCaps static_rtp_caps = GST_STATIC_CAPS (KMS_AGNOSTIC_RTP_CAPS);
 static GstStaticCaps static_raw_caps =
     GST_STATIC_CAPS
     ("video/x-raw; video/x-raw(ANY); audio/x-raw; audio/x-raw(ANY);");
@@ -151,6 +161,19 @@ kms_utils_caps_are_raw (const GstCaps * caps)
   return ret;
 }
 
+gboolean
+kms_utils_caps_are_rtp (const GstCaps * caps)
+{
+  gboolean ret;
+  GstCaps *raw_caps = gst_static_caps_get (&static_rtp_caps);
+
+  ret = gst_caps_is_always_compatible (caps, raw_caps);
+
+  gst_caps_unref (raw_caps);
+
+  return ret;
+}
+
 /* Caps end */
 
 GstElement *
@@ -187,23 +210,77 @@ kms_utils_create_rate_for_caps (const GstCaps * caps)
   return rate;
 }
 
-/* key frame management */
+const gchar *
+kms_utils_get_caps_codec_name_from_sdp (const gchar * codec_name)
+{
+  if (g_ascii_strcasecmp (OPUS_ENCONDING_NAME, codec_name) == 0) {
+    return "OPUS";
+  }
+  if (g_ascii_strcasecmp (VP8_ENCONDING_NAME, codec_name) == 0) {
+    return "VP8";
+  }
 
-#define DROPPING_UNTIL_KEY_FRAME "dropping_until_key_frame"
+  return codec_name;
+}
+
+KmsMediaType
+kms_utils_convert_element_pad_type (KmsElementPadType pad_type)
+{
+  switch (pad_type) {
+    case KMS_ELEMENT_PAD_TYPE_AUDIO:
+      return KMS_MEDIA_TYPE_AUDIO;
+      break;
+    case KMS_ELEMENT_PAD_TYPE_VIDEO:
+      return KMS_MEDIA_TYPE_VIDEO;
+      break;
+    case KMS_ELEMENT_PAD_TYPE_DATA:
+      return KMS_MEDIA_TYPE_DATA;
+      break;
+    default:
+      GST_ERROR ("Invalid pad type, cannot be converted");
+      g_assert_not_reached ();
+      return KMS_MEDIA_TYPE_VIDEO;
+  }
+}
+
+KmsElementPadType
+kms_utils_convert_media_type (KmsMediaType media_type)
+{
+  switch (media_type) {
+    case KMS_MEDIA_TYPE_AUDIO:
+      return KMS_ELEMENT_PAD_TYPE_AUDIO;
+      break;
+    case KMS_MEDIA_TYPE_VIDEO:
+      return KMS_ELEMENT_PAD_TYPE_VIDEO;
+      break;
+    case KMS_MEDIA_TYPE_DATA:
+      return KMS_ELEMENT_PAD_TYPE_DATA;
+      break;
+    default:
+      GST_ERROR ("Invalid media type, cannot be converted");
+      g_assert_not_reached ();
+      return KMS_ELEMENT_PAD_TYPE_VIDEO;
+  }
+}
+
+/* keyframe management */
+
+#define DROPPING_UNTIL_KEY_FRAME "dropping-until-key-frame"
+G_DEFINE_QUARK (DROPPING_UNTIL_KEY_FRAME, dropping_until_key_frame);
 
 /* Call this function holding the lock */
 static inline gboolean
 is_dropping (GstPad * pad)
 {
-  return GPOINTER_TO_INT (g_object_get_data (G_OBJECT (pad),
-          DROPPING_UNTIL_KEY_FRAME));
+  return GPOINTER_TO_INT (g_object_get_qdata (G_OBJECT (pad),
+          dropping_until_key_frame_quark ()));
 }
 
 /* Call this function holding the lock */
 static inline void
 set_dropping (GstPad * pad, gboolean dropping)
 {
-  g_object_set_data (G_OBJECT (pad), DROPPING_UNTIL_KEY_FRAME,
+  g_object_set_qdata (G_OBJECT (pad), dropping_until_key_frame_quark (),
       GINT_TO_POINTER (dropping));
 }
 
@@ -251,19 +328,61 @@ end:
   gst_caps_unref (caps);
 }
 
+static gboolean
+find_keyframe_idx (GstBuffer ** buf, guint idx, gpointer user_data)
+{
+  if (buffer_is_keyframe (*buf)) {
+    *(gint *) (user_data) = idx;
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
 static GstPadProbeReturn
 drop_until_keyframe_probe (GstPad * pad, GstPadProbeInfo * info,
     gpointer user_data)
 {
-  GstBuffer *buffer;
   gboolean all_headers = GPOINTER_TO_INT (user_data);
+  gboolean drop = FALSE;
 
-  buffer = GST_PAD_PROBE_INFO_BUFFER (info);
+  if (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_BUFFER) {
+    GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER (info);
 
-  if (GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_DELTA_UNIT)) {
-    /* Drop buffer until a keyframe is received */
+    drop = !buffer_is_keyframe (buffer);
+    GST_TRACE_OBJECT (pad, "%s",
+        drop ? "Drop buffer" : "Keep buffer (is keyframe)");
+  } else if (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
+    GstBufferList *bufflist = GST_PAD_PROBE_INFO_BUFFER_LIST (info);
+    gint keyframe_idx = -1;
+
+    gst_buffer_list_foreach (bufflist,
+        (GstBufferListFunc) find_keyframe_idx, &keyframe_idx);
+
+    if (keyframe_idx == -1) {
+      GST_TRACE_OBJECT (pad, "Drop bufferlist, there is no keyframe");
+      drop = TRUE;
+    } else if (keyframe_idx == 0) {
+      GST_TRACE_OBJECT (pad, "Keep bufferlist, the first buffer is keyframe");
+      /* keep bufferlist as is */
+    } else {
+      GST_TRACE_OBJECT (pad,
+          "Keep bufferlist, drop first %d buffers until keyframe",
+          keyframe_idx);
+
+      bufflist = gst_buffer_list_make_writable (bufflist);
+      gst_buffer_list_remove (bufflist, 0, keyframe_idx);
+      GST_PAD_PROBE_INFO_DATA (info) = bufflist;
+    }
+  } else {
+    GST_WARNING_OBJECT (pad,
+        "This probe should receive only buffers or buflists");
+    return GST_PAD_PROBE_OK;
+  }
+
+  if (drop) {
+    /* Drop until a keyframe is received */
     send_force_key_unit_event (pad, all_headers);
-    GST_TRACE_OBJECT (pad, "Dropping buffer");
     return GST_PAD_PROBE_DROP;
   }
 
@@ -271,7 +390,7 @@ drop_until_keyframe_probe (GstPad * pad, GstPadProbeInfo * info,
   set_dropping (pad, FALSE);
   GST_OBJECT_UNLOCK (pad);
 
-  GST_DEBUG_OBJECT (pad, "Finish dropping buffers until key frame");
+  GST_DEBUG_OBJECT (pad, "Finish dropping buffers until keyframe");
 
   /* So this buffer is a keyframe we don't need this probe any more */
   return GST_PAD_PROBE_REMOVE;
@@ -282,13 +401,14 @@ kms_utils_drop_until_keyframe (GstPad * pad, gboolean all_headers)
 {
   GST_OBJECT_LOCK (pad);
   if (is_dropping (pad)) {
-    GST_DEBUG_OBJECT (pad, "Already dropping buffers until key frame");
+    GST_DEBUG_OBJECT (pad, "Already dropping buffers until keyframe");
     GST_OBJECT_UNLOCK (pad);
   } else {
-    GST_DEBUG_OBJECT (pad, "Start dropping buffers until key frame");
+    GST_DEBUG_OBJECT (pad, "Start dropping buffers until keyframe");
     set_dropping (pad, TRUE);
     GST_OBJECT_UNLOCK (pad);
-    gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER,
+    gst_pad_add_probe (pad,
+        GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST,
         drop_until_keyframe_probe, GINT_TO_POINTER (all_headers), NULL);
     send_force_key_unit_event (pad, all_headers);
   }
@@ -301,7 +421,7 @@ discont_detection_probe (GstPad * pad, GstPadProbeInfo * info, gpointer data)
 
   if (GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_DISCONT)) {
     if (GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_DELTA_UNIT)) {
-      GST_WARNING_OBJECT (pad, "Discont detected");
+      GST_WARNING_OBJECT (pad, "Stream discontinuity detected on non-keyframe");
       kms_utils_drop_until_keyframe (pad, FALSE);
 
       return GST_PAD_PROBE_DROP;
@@ -317,7 +437,13 @@ gap_detection_probe (GstPad * pad, GstPadProbeInfo * info, gpointer data)
   GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
 
   if (GST_EVENT_TYPE (event) == GST_EVENT_GAP) {
-    GST_WARNING_OBJECT (pad, "Gap detected");
+    GstClockTime timestamp;
+    GstClockTime duration;
+    gst_event_parse_gap (event, &timestamp, &duration);
+    GST_WARNING_OBJECT (pad,
+        "Stream gap detected, timestamp: %" GST_TIME_FORMAT ", "
+        "duration: %" GST_TIME_FORMAT,
+        GST_TIME_ARGS(timestamp), GST_TIME_ARGS(duration));
     send_force_key_unit_event (pad, FALSE);
     return GST_PAD_PROBE_DROP;
   }
@@ -328,8 +454,8 @@ gap_detection_probe (GstPad * pad, GstPadProbeInfo * info, gpointer data)
 void
 kms_utils_manage_gaps (GstPad * pad)
 {
-  gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, discont_detection_probe,
-      NULL, NULL);
+  gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER,
+      discont_detection_probe, NULL, NULL);
   gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
       gap_detection_probe, NULL, NULL);
 }
@@ -354,11 +480,13 @@ check_last_request_time (GstPad * pad)
 
   GST_OBJECT_LOCK (pad);
 
-  last = g_object_get_data (G_OBJECT (pad), LAST_KEY_FRAME_REQUEST_TIME);
+  last =
+      g_object_get_qdata (G_OBJECT (pad), last_key_frame_request_time_quark ());
 
   if (last == NULL) {
     last = g_slice_new (GstClockTime);
-    g_object_set_data_full (G_OBJECT (pad), LAST_KEY_FRAME_REQUEST_TIME, last,
+    g_object_set_qdata_full (G_OBJECT (pad),
+        last_key_frame_request_time_quark (), last,
         (GDestroyNotify) kms_utils_destroy_GstClockTime);
 
     *last = now;
@@ -398,14 +526,14 @@ kms_utils_control_key_frames_request_duplicates (GstPad * pad)
       NULL, NULL);
 }
 
-void
-kms_element_for_each_src_pad (GstElement * element,
-    KmsPadCallback action, gpointer data)
+static gboolean
+kms_element_iterate_pads (GstIterator * it, KmsPadCallback action,
+    gpointer data)
 {
-  GstIterator *it = gst_element_iterate_src_pads (element);
   gboolean done = FALSE;
   GstPad *pad;
   GValue item = G_VALUE_INIT;
+  gboolean success = TRUE;
 
   while (!done) {
     switch (gst_iterator_next (it, &item)) {
@@ -418,6 +546,7 @@ kms_element_for_each_src_pad (GstElement * element,
         gst_iterator_resync (it);
         break;
       case GST_ITERATOR_ERROR:
+        success = FALSE;
       case GST_ITERATOR_DONE:
         done = TRUE;
         break;
@@ -425,7 +554,31 @@ kms_element_for_each_src_pad (GstElement * element,
   }
 
   g_value_unset (&item);
+
+  return success;
+}
+
+void
+kms_element_for_each_src_pad (GstElement * element,
+    KmsPadCallback action, gpointer data)
+{
+  GstIterator *it = gst_element_iterate_src_pads (element);
+
+  kms_element_iterate_pads (it, action, data);
   gst_iterator_free (it);
+}
+
+gboolean
+kms_element_for_each_sink_pad (GstElement * element,
+    KmsPadCallback action, gpointer data)
+{
+  GstIterator *it = gst_element_iterate_sink_pads (element);
+  gboolean ret;
+
+  ret = kms_element_iterate_pads (it, action, data);
+  gst_iterator_free (it);
+
+  return ret;
 }
 
 typedef struct _PadBlockedData
@@ -568,8 +721,8 @@ kms_utils_remb_event_upstream_new (guint bitrate, guint ssrc)
   return event;
 }
 
-static gboolean
-is_remb_event (GstEvent * event)
+gboolean
+kms_utils_is_remb_event_upstream (GstEvent * event)
 {
   const GstStructure *s;
 
@@ -591,7 +744,7 @@ kms_utils_remb_event_upstream_parse (GstEvent * event, guint * bitrate,
 {
   const GstStructure *s;
 
-  if (!is_remb_event (event)) {
+  if (!kms_utils_is_remb_event_upstream (event)) {
     return FALSE;
   }
 
@@ -864,27 +1017,6 @@ kms_utils_get_time_nsecs ()
 
 /* time end */
 
-/* RTP connection begin */
-gchar *
-kms_utils_create_connection_name_from_media_config (SdpMediaConfig * mconf)
-{
-  SdpMediaGroup *group = kms_sdp_media_config_get_group (mconf);
-  gchar *conn_name;
-
-  if (group != NULL) {
-    gint gid = kms_sdp_media_group_get_id (group);
-
-    conn_name =
-        g_strdup_printf ("%s%" G_GINT32_FORMAT, BUNDLE_STREAM_NAME, gid);
-  } else {
-    gint mid = kms_sdp_media_config_get_id (mconf);
-
-    conn_name = g_strdup_printf ("%" G_GINT32_FORMAT, mid);
-  }
-
-  return conn_name;
-}
-
 /* RTP connection end */
 
 gboolean
@@ -928,8 +1060,8 @@ kms_utils_get_structure_by_name (const GstStructure * str, const gchar * name)
   return gst_value_get_structure (value);
 }
 
-void
-kms_utils_set_uuid (GObject * obj)
+gchar *
+kms_utils_generate_uuid ()
 {
   gchar *uuid_str;
   uuid_t uuid;
@@ -938,15 +1070,23 @@ kms_utils_set_uuid (GObject * obj)
   uuid_generate (uuid);
   uuid_unparse (uuid, uuid_str);
 
-  /* Assign a unique ID to each SSRC which will */
-  /* be provided in statistics */
-  g_object_set_data_full (obj, KMS_KEY_ID, uuid_str, g_free);
+  return uuid_str;
+}
+
+void
+kms_utils_set_uuid (GObject * obj)
+{
+  gchar *uuid_str;
+
+  uuid_str = kms_utils_generate_uuid ();
+
+  g_object_set_qdata_full (obj, kms_key_id_quark (), uuid_str, g_free);
 }
 
 const gchar *
 kms_utils_get_uuid (GObject * obj)
 {
-  return (const gchar *) g_object_get_data (obj, KMS_KEY_ID);
+  return (const gchar *) g_object_get_qdata (obj, kms_key_id_quark ());
 }
 
 const char *
@@ -1020,6 +1160,277 @@ kms_utils_generate_fingerprint_from_pem (const gchar * pem)
   g_strfreev (lines);
 
   return ret;
+}
+
+typedef struct _KmsEventData KmsEventData;
+struct _KmsEventData
+{
+  GstPadEventFunction user_func;
+  gpointer user_data;
+  GDestroyNotify user_notify;
+  KmsEventData *next;
+};
+
+static void
+kms_event_data_destroy (gpointer user_data)
+{
+  KmsEventData *data = user_data;
+
+  if (data->next != NULL) {
+    kms_event_data_destroy (data->next);
+  }
+
+  if (data->user_notify != NULL) {
+    data->user_notify (data->user_data);
+  }
+
+  g_slice_free (KmsEventData, data);
+}
+
+static gboolean
+kms_event_function (GstPad * pad, GstObject * parent, GstEvent * event)
+{
+  KmsEventData *data, *first = pad->eventdata;
+  gboolean ret = TRUE;
+
+  for (data = first; data != NULL && ret; data = data->next) {
+    if (data->user_func != NULL) {
+      /* Set data expected by the callback */
+      pad->eventdata = data->user_data;
+      ret = data->user_func (pad, parent, gst_event_ref (event));
+    }
+  }
+
+  /* Restore pad event data */
+  pad->eventdata = first;
+
+  gst_event_unref (event);
+
+  return ret;
+}
+
+void
+kms_utils_set_pad_event_function_full (GstPad * pad, GstPadEventFunction event,
+    gpointer user_data, GDestroyNotify notify, gboolean chain_callbacks)
+{
+  GstPadEventFunction prev_func;
+  KmsEventData *data;
+
+  /* Create new data */
+  data = g_slice_new0 (KmsEventData);
+  data->user_func = event;
+  data->user_data = user_data;
+  data->user_notify = notify;
+
+  if (!chain_callbacks) {
+    goto set_func;
+  }
+
+  prev_func = GST_PAD_EVENTFUNC (pad);
+
+  if (prev_func != kms_event_function) {
+    /* Keep first data to chain to it */
+    KmsEventData *first;
+
+    first = g_slice_new0 (KmsEventData);
+    first->user_func = GST_PAD_EVENTFUNC (pad);
+    first->user_data = pad->eventdata;
+    first->user_notify = pad->eventnotify;
+    data->next = first;
+  } else {
+    /* Point to previous data to be chained  */
+    data->next = pad->eventdata;
+  }
+
+  /* Do not destroy previous data when set_event is called */
+  pad->eventnotify = NULL;
+  pad->eventdata = NULL;
+
+set_func:
+
+  gst_pad_set_event_function_full (pad, kms_event_function, data,
+      kms_event_data_destroy);
+}
+
+typedef struct _KmsQueryData KmsQueryData;
+struct _KmsQueryData
+{
+  GstPadQueryFunction user_func;
+  gpointer user_data;
+  GDestroyNotify user_notify;
+  KmsQueryData *next;
+};
+
+static void
+kms_query_data_destroy (gpointer user_data)
+{
+  KmsQueryData *data = user_data;
+
+  if (data->next != NULL) {
+    kms_query_data_destroy (data->next);
+  }
+
+  if (data->user_notify != NULL) {
+    data->user_notify (data->user_data);
+  }
+
+  g_slice_free (KmsQueryData, data);
+}
+
+static gboolean
+kms_query_function (GstPad * pad, GstObject * parent, GstQuery * query)
+{
+  KmsQueryData *data, *first = pad->querydata;
+  gboolean ret = FALSE;
+
+  for (data = first; data != NULL && !ret; data = data->next) {
+    if (data->user_func != NULL) {
+      /* Set data expected by the callback */
+      pad->querydata = data->user_data;
+      ret = data->user_func (pad, parent, query);
+    }
+  }
+
+  /* Restore pad query data */
+  pad->querydata = first;
+
+  return ret;
+}
+
+void
+kms_utils_set_pad_query_function_full (GstPad * pad,
+    GstPadQueryFunction query_func, gpointer user_data, GDestroyNotify notify,
+    gboolean chain_callbacks)
+{
+  GstPadQueryFunction prev_func;
+  KmsQueryData *data;
+
+  /* Create new data */
+  data = g_slice_new0 (KmsQueryData);
+  data->user_func = query_func;
+  data->user_data = user_data;
+  data->user_notify = notify;
+
+  if (!chain_callbacks) {
+    goto set_func;
+  }
+
+  prev_func = GST_PAD_QUERYFUNC (pad);
+
+  if (prev_func != kms_query_function) {
+    /* Keep first data to chain to it */
+    KmsQueryData *first;
+
+    first = g_slice_new0 (KmsQueryData);
+    first->user_func = GST_PAD_QUERYFUNC (pad);
+    first->user_data = pad->querydata;
+    first->user_notify = pad->querynotify;
+    data->next = first;
+  } else {
+    /* Point to previous data to be chained  */
+    data->next = pad->querydata;
+  }
+
+  /* Do not destroy previous data when set_query is called */
+  pad->querynotify = NULL;
+  pad->querydata = NULL;
+
+set_func:
+
+  gst_pad_set_query_function_full (pad, kms_query_function, data,
+      kms_query_data_destroy);
+}
+
+typedef struct _AdjustPtsData
+{
+  GstElement *element;
+  GstClockTime last_pts;
+} AdjustPtsData;
+
+static void
+adjust_pts_data_destroy (AdjustPtsData * data)
+{
+  g_slice_free (AdjustPtsData, data);
+}
+
+static AdjustPtsData *
+adjust_pts_data_new (GstElement * element)
+{
+  AdjustPtsData *data;
+
+  data = g_slice_new0 (AdjustPtsData);
+  data->element = element;
+  data->last_pts = GST_CLOCK_TIME_NONE;
+
+  return data;
+}
+
+static void
+kms_rtp_receiver_adjust_pts (AdjustPtsData * data, GstBuffer ** buffer)
+{
+  if (GST_CLOCK_TIME_IS_VALID (data->last_pts) &&
+      GST_BUFFER_PTS (*buffer) <= data->last_pts) {
+    GstClockTime pts_orig;
+
+    *buffer = gst_buffer_make_writable (*buffer);
+    pts_orig = GST_BUFFER_PTS (*buffer);
+    GST_BUFFER_PTS (*buffer) = data->last_pts + GST_MSECOND;
+
+    GST_WARNING_OBJECT (data->element,
+        "Non incremental PTS (last PTS: %"
+        GST_TIME_FORMAT ", PTS: %" GST_TIME_FORMAT ", new PTS: %"
+        GST_TIME_FORMAT ")", GST_TIME_ARGS (data->last_pts),
+        GST_TIME_ARGS (pts_orig), GST_TIME_ARGS (GST_BUFFER_PTS (*buffer)));
+  }
+
+  GST_BUFFER_DTS (*buffer) = GST_BUFFER_PTS (*buffer);
+  data->last_pts = GST_BUFFER_PTS (*buffer);
+
+  //GST_TRACE_OBJECT (data->element, "PTS: %" GST_TIME_FORMAT,
+  //    GST_TIME_ARGS (GST_BUFFER_PTS (*buffer)));
+}
+
+static gboolean
+adjust_pts_it (GstBuffer ** buffer, guint idx, AdjustPtsData * data)
+{
+  kms_rtp_receiver_adjust_pts (data, buffer);
+
+  return TRUE;
+}
+
+static GstPadProbeReturn
+adjust_pts_probe (GstPad * pad, GstPadProbeInfo * info, AdjustPtsData * data)
+{
+  if (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_BUFFER_LIST) {
+    GstBufferList *list = GST_PAD_PROBE_INFO_BUFFER_LIST (info);
+
+    list = gst_buffer_list_make_writable (list);
+    gst_buffer_list_foreach (list, (GstBufferListFunc) adjust_pts_it, data);
+    GST_PAD_PROBE_INFO_DATA (info) = list;
+  } else if (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_BUFFER) {
+    GstBuffer *buffer = GST_PAD_PROBE_INFO_BUFFER (info);
+
+    kms_rtp_receiver_adjust_pts (data, &buffer);
+    GST_PAD_PROBE_INFO_DATA (info) = buffer;
+  }
+
+  return GST_PAD_PROBE_OK;
+}
+
+void
+kms_utils_adjust_output_pts (GstElement * depayloader)
+{
+  GstPad *pad;
+
+  GST_INFO_OBJECT (depayloader, "Adding adjust PTS algorithm");
+
+  pad = gst_element_get_static_pad (depayloader, "src");
+  gst_pad_add_probe (pad,
+      GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST,
+      (GstPadProbeCallback) adjust_pts_probe,
+      adjust_pts_data_new (depayloader),
+      (GDestroyNotify) adjust_pts_data_destroy);
+  g_object_unref (pad);
 }
 
 static void init_debug (void) __attribute__ ((constructor));
